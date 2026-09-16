@@ -275,6 +275,11 @@ pub fn extract_zip(
         let mut file = File::create(output)?;
         io::copy(&mut entry, &mut file)?;
         file.flush()?;
+        #[cfg(unix)]
+        if let Some(mode) = entry.unix_mode() {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(fs::Permissions::from_mode(mode & 0o777))?;
+        }
     }
     Ok(())
 }
@@ -302,6 +307,11 @@ pub fn extract_tar_gz(
             }
             let mut file = File::create(output)?;
             io::copy(&mut entry, &mut file)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(fs::Permissions::from_mode(entry.header().mode()? & 0o777))?;
+            }
         } else {
             return Err(PackageError::Archive(
                 "links and special entries are not supported".into(),
@@ -360,6 +370,18 @@ mod tests {
         let output = dir.path().join("output");
         extract_tar_gz(&path, &output, 1).unwrap();
         assert_eq!(fs::read(output.join("bin/php")).unwrap(), bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(output.join("bin/php"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
     }
     #[test]
     fn archive_install_is_atomic_and_idempotent() {

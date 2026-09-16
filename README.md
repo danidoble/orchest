@@ -56,10 +56,20 @@ Run `ORCHEST_ROOT=/path/to/root cargo run -p orchest-api` after `orchest init`. 
 
 Windows uses the official PHP ZIP files listed in `manifests/php.toml`. Linux uses Orchest-built release archives because PHP does not publish official precompiled Linux binaries. The workflow in `.github/workflows/release-php-linux.yml` builds PHP CLI and FPM from PHP source in an Ubuntu 22.04 container, bundles non-glibc libraries, and tests the archive on Ubuntu 22.04, Ubuntu 24.04, and Debian 12 before publishing it to GitHub Releases.
 
-The repository is `danidoble/orchest`. With GitHub Actions enabled, run **Release managed PHP for Linux** for version `8.4.15`, revision `1`, and then `8.5.10`, revision `1`. Set `orchest config set sources.github_repository danidoble/orchest` in each Orchest installation. This selects the repository for the Linux release URLs; it does not change Windows downloads. New PHP versions require a manifest entry and a workflow run. Rebuilds use a new revision and a matching manifest URL. `config/packages/php.toml` in an existing Orchest root is user-controlled and is not overwritten by `init`.
+The repository is `danidoble/orchest`. PHP 8.4.15 and 8.5.10 Linux artifacts were published as revision 1 on 2026-09-16. Set `orchest config set sources.github_repository danidoble/orchest` in each Orchest installation. This selects the repository for the Linux release URLs; it does not change Windows downloads. New PHP versions require a manifest entry and a workflow run. Rebuilds use a new revision and a matching manifest URL. `config/packages/php.toml` in an existing Orchest root is user-controlled and is not overwritten by `init`.
 
-Each artifact requires `url`, `archive` (`zip` or `tar.gz`), and `executable`; `strip_components` is optional. Managed PHP on Windows may need the Microsoft Visual C++ runtime supplied by the OS or installed separately. The release workflow has been tested locally for PHP 8.4.15 and 8.5.10, but no assets have been published yet. This repository is private, and the current installer does not authenticate GitHub release downloads; use `--archive` for local testing until authenticated downloads are implemented or the repository becomes public.
+Each artifact requires `url`, `archive` (`zip` or `tar.gz`), and `executable`; `strip_components` is optional. Managed PHP on Windows may need the Microsoft Visual C++ runtime supplied by the OS or installed separately. This repository is private, and the current installer does not authenticate GitHub release downloads. To test the published Linux assets now, download them with authenticated `gh` and install from the local archives:
+
+```sh
+gh release download php-8.4.15-linux-x86_64-r1 --repo danidoble/orchest --dir ./orchest-php
+gh release download php-8.5.10-linux-x86_64-r1 --repo danidoble/orchest --dir ./orchest-php
+orchest init
+orchest php install 8.4.15 --archive ./orchest-php/php-8.4.15-linux-x86_64.tar.gz
+orchest php install 8.5.10 --archive ./orchest-php/php-8.5.10-linux-x86_64.tar.gz
+```
+
+The downloaded assets and both `php-fpm` binaries were verified on Linux after installation. Direct `orchest php install <version>` remains pending until authenticated downloads are implemented or the repository is public.
 
 ## Current limits
 
-This is an early CLI and API slice. The Linux build and distribution workflow exists but has not been run in GitHub Actions or published. The process supervisor is not connected to service commands yet; Nginx/Apache/database integrations, certificates, and desktop UI remain to be implemented. The API currently runs synchronous core operations directly for its short handlers; long downloads use a blocking worker.
+This is an early CLI and API slice. Linux PHP artifacts are published, but private release URLs still need authenticated installer downloads. The process supervisor is not connected to service commands yet; Nginx/Apache/database integrations, certificates, and desktop UI remain to be implemented. The API currently runs synchronous core operations directly for its short handlers; long downloads use a blocking worker.

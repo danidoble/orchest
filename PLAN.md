@@ -12,7 +12,8 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] `orchest exec` y `project exec` sin modificar el PATH global; salida JSON, `init`, `status`, `config`, `doctor` y comprobación básica de puertos.
 - [x] Builds Linux locales de PHP 8.4.15 y 8.5.10, con CLI y FPM; ejecución probada en Debian 12 y Ubuntu 24.04. Secuencia del hito probada en Linux con `--archive` y ambas versiones reales.
 - [x] ZIP oficiales de PHP para Windows declarados en el manifest.
-- [ ] Publicar los dos artefactos Linux en GitHub Releases y probar `orchest php install <versión>` desde la URL HTTPS del manifest, sin `--archive`.
+- [x] Publicar los artefactos Linux de PHP 8.4.15 y 8.5.10 en GitHub Releases; verificar digest SHA-256, instalación desde los assets descargados y ejecución de CLI y FPM en Linux.
+- [ ] Probar `orchest php install <versión>` desde la URL HTTPS del manifest, sin `--archive`, tras resolver la autenticación del repositorio privado.
 - [ ] Ejecutar la secuencia completa del hito en Windows con los ZIP oficiales y verificar `php.ini`, rutas con espacios y dependencias de Visual C++.
 - [ ] Ampliar `doctor` con escritura de raíz, integridad SQLite, puertos ocupados por otros procesos y estados PID obsoletos.
 

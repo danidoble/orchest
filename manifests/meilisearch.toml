@@ -1,0 +1,17 @@
+[package]
+id = "meilisearch"
+name = "Meilisearch"
+type = "service"
+
+[[versions]]
+version = "1.51.0"
+
+[versions.windows-x86_64]
+url = "https://github.com/meilisearch/meilisearch/releases/download/v1.51.0/meilisearch-windows-amd64.exe"
+archive = "binary"
+executable = "meilisearch.exe"
+
+[versions.linux-x86_64]
+url = "https://github.com/meilisearch/meilisearch/releases/download/v1.51.0/meilisearch-linux-amd64"
+archive = "binary"
+executable = "meilisearch"

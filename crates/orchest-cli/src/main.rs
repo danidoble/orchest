@@ -246,20 +246,11 @@ fn run(cli: &Cli) -> Result<(Value, i32), OrchestError> {
             PhpCommand::Default { version } => json!(app.config_set("defaults.php", version)?),
         },
         Command::Service { command } => match command {
-            ServiceCommand::Status { name } if name == "mailpit" => {
-                json!({"name":name,"status":app.mailpit_status()?})
+            ServiceCommand::Status { name } => {
+                json!({"name":name,"status":app.service_status(name)?})
             }
-            ServiceCommand::Start { name } if name == "mailpit" => {
-                json!(app.start_mailpit()?)
-            }
-            ServiceCommand::Stop { name } if name == "mailpit" => {
-                json!({"name":name,"status":app.stop_mailpit()?})
-            }
-            _ => {
-                return Err(OrchestError::InvalidInput(
-                    "only mailpit is currently supported".into(),
-                ))
-            }
+            ServiceCommand::Start { name } => json!(app.start_service(name)?),
+            ServiceCommand::Stop { name } => json!({"name":name,"status":app.stop_service(name)?}),
         },
         Command::Project { command } => match command {
             ProjectCommand::List => json!(app.projects()?),

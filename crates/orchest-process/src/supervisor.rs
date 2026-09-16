@@ -157,6 +157,9 @@ impl Supervisor {
         }
         let binary = binary.canonicalize()?;
         fs::create_dir_all(&self.state_dir)?;
+        if let Some(parent) = state_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         let log_dir = self.log_path(service_id, instance_id);
         fs::create_dir_all(&log_dir)?;
         let mut command = Command::new(&binary);
@@ -178,7 +181,7 @@ impl Supervisor {
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
         let pid = child.id();
         let mut system = System::new();
         let process_start_time = (0..10)
@@ -191,6 +194,8 @@ impl Supervisor {
                 found
             })
             .ok_or_else(|| {
+                let _ = child.kill();
+                let _ = child.wait();
                 ProcessError::InvalidState(
                     "service exited before its identity could be recorded".into(),
                 )
@@ -203,14 +208,15 @@ impl Supervisor {
             started_at: Utc::now(),
             process_start_time,
         };
-        if let Some(parent) = state_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        orchest_platform::atomic_write(
+        if let Err(error) = orchest_platform::atomic_write(
             &state_path,
             &serde_json::to_vec_pretty(&state)
                 .map_err(|e| ProcessError::InvalidState(e.to_string()))?,
-        )?;
+        ) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error.into());
+        }
         Ok(state)
     }
     pub fn stop(&self, service_id: &str) -> Result<(), ProcessError> {

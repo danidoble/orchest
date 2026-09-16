@@ -16,7 +16,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Instalación HTTPS directa de las cuatro versiones con `orchest php install <versión>` y ejecución de cada CLI verificadas dentro de un contenedor Ubuntu 26.04 aislado.
 - [x] Repetir el recorrido de instalación PHP en VMs Linux y Windows, con rutas reales de usuario y el Redistributable de Windows (validación confirmada por el usuario).
 - [x] Ejecutar la secuencia completa del hito en Windows con los ZIP oficiales y verificar `php.ini`, rutas con espacios y dependencias de Visual C++ (validación confirmada por el usuario).
-- [x] Ampliar `doctor` con prueba de escritura en la raíz, integridad SQLite, diagnóstico de puertos indisponibles y estados PID obsoletos. La propiedad real de puertos ajenos sigue pendiente del registro de puertos.
+- [x] Ampliar `doctor` con prueba de escritura en la raíz, integridad SQLite, diagnóstico de puertos indisponibles y estados PID obsoletos. La identificación del PID de procesos externos sigue pendiente.
 
 ### Distribución y plataformas (secciones 3–6, 26–27, 30)
 
@@ -41,9 +41,11 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Base de supervisor de procesos con PID, identidad del ejecutable, logs y parada; prueba de inicio/parada en Linux.
 - [x] Primer servicio: Mailpit 1.31.1 con manifest Windows/Linux, datos aislados y comandos/API de inicio, parada y estado; flujos CLI y API verificados dentro de contenedores Linux, incluida respuesta `401` sin token.
 - [x] Generalizar el supervisor para múltiples instancias, con estado y logs aislados, detección de caídas y recuperación explícita de registros obsoletos; pruebas locales en Linux.
+- [x] Registrar reservas de puertos en SQLite por servicio e instancia; rechazar conflictos antes del arranque, mostrar el propietario administrado y liberar reservas al detener. Pruebas locales y flujo real de Meilisearch en Linux.
+- [x] Integrar Meilisearch 1.51.0 como segundo servicio: binarios oficiales Linux/Windows, instalación autocontenida, datos aislados, puerto configurable y comandos/API de inicio, parada y estado. Instalación y arranque verificados en Linux.
 - [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.
 - [ ] Añadir manifests, instalación autocontenida y configuraciones para Nginx, Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
-- [ ] Implementar registro de puertos con propietario real, reservas y diagnóstico de conflictos sin finalizar procesos ajenos.
+- [ ] Identificar el PID propietario de puertos ocupados por procesos externos y verificar la propiedad del socket del servicio administrado en Windows y Linux.
 - [ ] Implementar proxy de entrada 80/443, selección Nginx/Apache por proyecto y configuraciones generadas y validadas.
 - [ ] Implementar PHP-FPM por versión en Linux y FastCGI con `php-cgi.exe` en Windows; enrutar cada proyecto a su versión PHP.
 - [ ] Implementar datos persistentes por instancia, inicio/parada de proyectos, dominios `.test`, hosts y certificados locales con confianza opcional.
@@ -54,7 +56,8 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [ ] Servidores web: Nginx y Apache, manifests, configuración validada, rutas por proyecto y proxy 80/443.
 - [ ] Node.js con `npm` y `pnpm` mediante Corepack; selección de versión global y por proyecto.
 - [ ] Bases de datos: MariaDB 11 y 12, MySQL 8, MongoDB y Redis; directorios de datos y puertos por instancia, respaldo y recuperación.
-- [ ] Servicios auxiliares: Meilisearch y RustFS como almacenamiento S3 local; no agregar MinIO.
+- [x] Servicio auxiliar Meilisearch integrado en CLI/API y probado en Linux.
+- [ ] RustFS como almacenamiento S3 local; no agregar MinIO.
 - [ ] Herramientas PHP: Composer y phpMyAdmin vinculados a la versión PHP y al proyecto apropiados.
 - [ ] Scheduler y Queue worker por proyecto, con arranque/parada, logs, reinicio y recuperación.
 - [ ] SSL local automático y renovable, con certificados por dominio y confianza del sistema opcional.

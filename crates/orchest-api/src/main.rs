@@ -200,7 +200,7 @@ async fn set_php(
         .map_err(error)?)))
 }
 fn supported_service(name: &str) -> Result<(), (StatusCode, Json<Value>)> {
-    if name == "mailpit" {
+    if matches!(name, "mailpit" | "meilisearch") {
         Ok(())
     } else {
         Err((
@@ -219,7 +219,7 @@ async fn service_status(
     authorize(&headers, &state)?;
     supported_service(&name)?;
     Ok(Json(
-        json!({"name":name,"status":state.orchest.mailpit_status().map_err(error)?}),
+        json!({"name":name,"status":state.orchest.service_status(&name).map_err(error)?}),
     ))
 }
 async fn start_service(
@@ -229,7 +229,7 @@ async fn start_service(
 ) -> ApiResult {
     authorize(&headers, &state)?;
     supported_service(&name)?;
-    let process = tokio::task::spawn_blocking(move || state.orchest.start_mailpit())
+    let process = tokio::task::spawn_blocking(move || state.orchest.start_service(&name))
         .await
         .map_err(|e| {
             (
@@ -247,7 +247,8 @@ async fn stop_service(
 ) -> ApiResult {
     authorize(&headers, &state)?;
     supported_service(&name)?;
-    let status = tokio::task::spawn_blocking(move || state.orchest.stop_mailpit())
+    let service_name = name.clone();
+    let status = tokio::task::spawn_blocking(move || state.orchest.stop_service(&service_name))
         .await
         .map_err(|e| {
             (

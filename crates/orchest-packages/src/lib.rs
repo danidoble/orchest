@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -145,7 +145,8 @@ fn validate_manifest(m: &Manifest) -> Result<(), PackageError> {
             }
             if !artifact.url.starts_with("https://")
                 || !safe_relative(Path::new(&artifact.executable))
-                || !["zip", "tar.gz"].contains(&artifact.archive.as_str())
+                || !["zip", "tar.gz", "binary"].contains(&artifact.archive.as_str())
+                || (artifact.archive == "binary" && artifact.strip_components != 0)
             {
                 return Err(PackageError::Manifest(format!(
                     "invalid artifact for {}",
@@ -204,6 +205,26 @@ pub fn install_archive(
     match artifact.archive.as_str() {
         "zip" => extract_zip(archive, staging.path(), artifact.strip_components)?,
         "tar.gz" => extract_tar_gz(archive, staging.path(), artifact.strip_components)?,
+        "binary" => {
+            let mut source = File::open(archive)?;
+            let mut magic = [0u8; 4];
+            source
+                .read_exact(&mut magic)
+                .map_err(|_| PackageError::Archive("binary is too short".into()))?;
+            let expected = if artifact.executable.ends_with(".exe") {
+                b"MZ".as_slice()
+            } else {
+                b"\x7fELF".as_slice()
+            };
+            if !magic.starts_with(expected) {
+                return Err(PackageError::Archive("unexpected executable format".into()));
+            }
+            let output = staging.path().join(&artifact.executable);
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(archive, output)?;
+        }
         other => {
             return Err(PackageError::Archive(format!(
                 "unsupported archive: {other}"
@@ -333,6 +354,26 @@ mod tests {
     fn checks_manifest() {
         let manifest: Manifest = toml::from_str("[package]\nid='php'\nname='PHP'\ntype='runtime'\n[[versions]]\nversion='8.4.15'\n[versions.linux-x86_64]\nurl='https://example.test/php.tar.gz'\narchive='tar.gz'\nexecutable='bin/php'").unwrap();
         validate_manifest(&manifest).unwrap();
+    }
+    #[test]
+    fn installs_raw_binary_and_rejects_wrong_format() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("download");
+        let artifact = Artifact {
+            url: "https://example.test/meilisearch".into(),
+            archive: "binary".into(),
+            executable: "meilisearch".into(),
+            strip_components: 0,
+        };
+        fs::write(&source, b"not a binary").unwrap();
+        assert!(install_archive(&artifact, &source, &root.path().join("installed")).is_err());
+        assert!(!root.path().join("installed").exists());
+        fs::write(&source, b"\x7fELFfixture").unwrap();
+        install_archive(&artifact, &source, &root.path().join("installed")).unwrap();
+        assert_eq!(
+            fs::read(root.path().join("installed/meilisearch")).unwrap(),
+            b"\x7fELFfixture"
+        );
     }
     #[test]
     fn extracts_zip_fixture() {

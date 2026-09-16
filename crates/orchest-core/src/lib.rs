@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use orchest_packages::{Artifact, Catalog, PackageError};
 use orchest_platform::{atomic_write, ensure_layout, Platform};
 use orchest_process::{ProcessState, ServiceStatus, Supervisor};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -73,12 +73,17 @@ pub struct Ports {
     pub mailpit_http: u16,
     #[serde(default = "default_mailpit_smtp_port")]
     pub mailpit_smtp: u16,
+    #[serde(default = "default_meilisearch_http_port")]
+    pub meilisearch_http: u16,
 }
 fn default_mailpit_http_port() -> u16 {
     8025
 }
 fn default_mailpit_smtp_port() -> u16 {
     1025
+}
+fn default_meilisearch_http_port() -> u16 {
+    7700
 }
 impl Default for Config {
     fn default() -> Self {
@@ -97,6 +102,7 @@ impl Default for Config {
                 redis: 6379,
                 mailpit_http: default_mailpit_http_port(),
                 mailpit_smtp: default_mailpit_smtp_port(),
+                meilisearch_http: default_meilisearch_http_port(),
             },
             sources: Sources::default(),
         }
@@ -135,6 +141,18 @@ pub struct PortInfo {
     pub port: u16,
     pub configured_for: String,
     pub available: bool,
+    pub owner: Option<String>,
+    pub state: PortState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortState {
+    Available,
+    Managed,
+    Reserved,
+    StaleClaim,
+    Unavailable,
 }
 
 pub struct Orchest {
@@ -143,6 +161,7 @@ pub struct Orchest {
 }
 const BUILTIN_PHP_MANIFEST: &str = include_str!("../../../manifests/php.toml");
 const BUILTIN_MAILPIT_MANIFEST: &str = include_str!("../../../manifests/mailpit.toml");
+const BUILTIN_MEILISEARCH_MANIFEST: &str = include_str!("../../../manifests/meilisearch.toml");
 impl Orchest {
     pub fn root(&self) -> &Path {
         &self.root
@@ -216,6 +235,10 @@ impl Orchest {
         if !mailpit_path.exists() {
             atomic_write(&mailpit_path, BUILTIN_MAILPIT_MANIFEST.as_bytes())?;
         }
+        let meilisearch_path = root.join("config/packages/meilisearch.toml");
+        if !meilisearch_path.exists() {
+            atomic_write(&meilisearch_path, BUILTIN_MEILISEARCH_MANIFEST.as_bytes())?;
+        }
         let config_path = root.join("config/orchest.toml");
         if !config_path.exists() {
             atomic_write(
@@ -236,7 +259,8 @@ impl Orchest {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS installations (package TEXT NOT NULL, version TEXT NOT NULL, platform TEXT NOT NULL, installed_at TEXT NOT NULL, source_url TEXT NOT NULL, executable TEXT NOT NULL, PRIMARY KEY(package,version));
-            CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE, php_version TEXT, node_version TEXT, domain TEXT, web_server TEXT, database_binding TEXT, ssl_enabled INTEGER NOT NULL DEFAULT 0);")?;
+            CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE, php_version TEXT, node_version TEXT, domain TEXT, web_server TEXT, database_binding TEXT, ssl_enabled INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS port_claims (port INTEGER PRIMARY KEY, service_id TEXT NOT NULL, instance_id TEXT NOT NULL);")?;
         Ok(connection)
     }
     pub fn config(&self) -> Result<Config> {
@@ -279,6 +303,7 @@ impl Orchest {
                     "ports.redis" => config.ports.redis = port,
                     "ports.mailpit_http" => config.ports.mailpit_http = port,
                     "ports.mailpit_smtp" => config.ports.mailpit_smtp = port,
+                    "ports.meilisearch_http" => config.ports.meilisearch_http = port,
                     _ => {
                         return Err(OrchestError::InvalidInput(format!(
                             "unknown port key: {key}"
@@ -440,15 +465,19 @@ impl Orchest {
                 "removal requires an exact version".into(),
             ));
         }
-        if package == "mailpit"
-            && self.mailpit_status()? == ServiceStatus::Running
-            && self.supervisor().state("mailpit")?.is_some_and(|state| {
-                installation.executable.canonicalize().ok() == Some(state.executable)
+        if self
+            .supervisor()
+            .instances(package)?
+            .iter()
+            .any(|instance| {
+                instance.status == ServiceStatus::Running
+                    && installation.executable.canonicalize().ok()
+                        == Some(instance.process.executable.clone())
             })
         {
-            return Err(OrchestError::PackageInUse(
-                "mailpit service is running".into(),
-            ));
+            return Err(OrchestError::PackageInUse(format!(
+                "{package} service is running"
+            )));
         }
         if package == "php" {
             let config = self.config()?;
@@ -667,6 +696,96 @@ impl Orchest {
             self.root.join("logs/services"),
         )
     }
+    fn start_managed_service(
+        &self,
+        service_id: &str,
+        instance_id: &str,
+        installation: &Installation,
+        ports: &[u16],
+        args: &[OsString],
+        data_dir: &Path,
+    ) -> Result<ProcessState> {
+        let supervisor = self.supervisor();
+        if supervisor.status_instance(service_id, instance_id)? == ServiceStatus::Running {
+            return Err(OrchestError::PackageInUse(format!(
+                "{service_id}/{instance_id} is running"
+            )));
+        }
+        let configured = configured_ports(&self.config()?.ports);
+        let mut unique = std::collections::BTreeSet::new();
+        for port in ports {
+            if !unique.insert(*port) {
+                return Err(OrchestError::InvalidInput(format!(
+                    "port {port} is assigned twice to {service_id}"
+                )));
+            }
+            let assignments: Vec<_> = configured
+                .iter()
+                .filter(|(_, value)| value == port)
+                .collect();
+            if assignments.len() > 1 {
+                return Err(OrchestError::InvalidInput(format!(
+                    "port {port} is configured for multiple services"
+                )));
+            }
+        }
+        let mut db = self.connect()?;
+        let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for port in ports {
+            let prior: Option<(String, String)> = transaction
+                .query_row(
+                    "SELECT service_id,instance_id FROM port_claims WHERE port=?1",
+                    [port],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((owner_service, owner_instance)) = prior {
+                if supervisor.status_instance(&owner_service, &owner_instance)?
+                    == ServiceStatus::Running
+                {
+                    return Err(OrchestError::PackageInUse(format!(
+                        "port {port} belongs to {owner_service}/{owner_instance}"
+                    )));
+                }
+                transaction.execute("DELETE FROM port_claims WHERE port=?1", [port])?;
+            }
+            if !port_available(*port) {
+                return Err(OrchestError::InvalidInput(format!(
+                    "port {port} is unavailable"
+                )));
+            }
+        }
+        fs::create_dir_all(data_dir)?;
+        let process = supervisor.start_instance(
+            service_id,
+            instance_id,
+            &installation.executable,
+            args,
+            Some(data_dir),
+        )?;
+        for port in ports {
+            if let Err(error) = transaction.execute(
+                "INSERT INTO port_claims (port,service_id,instance_id) VALUES (?1,?2,?3)",
+                params![port, service_id, instance_id],
+            ) {
+                let _ = supervisor.stop_instance(service_id, instance_id);
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = transaction.commit() {
+            let _ = supervisor.stop_instance(service_id, instance_id);
+            return Err(error.into());
+        }
+        Ok(process)
+    }
+    fn stop_managed_service(&self, service_id: &str, instance_id: &str) -> Result<ServiceStatus> {
+        self.supervisor().stop_instance(service_id, instance_id)?;
+        self.connect()?.execute(
+            "DELETE FROM port_claims WHERE service_id=?1 AND instance_id=?2",
+            params![service_id, instance_id],
+        )?;
+        Ok(self.supervisor().status_instance(service_id, instance_id)?)
+    }
     pub fn mailpit_status(&self) -> Result<ServiceStatus> {
         Ok(self.supervisor().status("mailpit")?)
     }
@@ -683,15 +802,7 @@ impl Orchest {
             .max_by_key(|entry| numeric_version(&entry.version))
             .ok_or_else(|| OrchestError::RuntimeNotInstalled("mailpit".into()))?;
         let ports = self.config()?.ports;
-        for port in [ports.mailpit_http, ports.mailpit_smtp] {
-            if !port_available(port) {
-                return Err(OrchestError::InvalidInput(format!(
-                    "port {port} is unavailable for Mailpit"
-                )));
-            }
-        }
         let data_dir = self.root.join("data/mailpit");
-        fs::create_dir_all(&data_dir)?;
         let args: Vec<OsString> = vec![
             "--listen".into(),
             format!("127.0.0.1:{}", ports.mailpit_http).into(),
@@ -700,11 +811,75 @@ impl Orchest {
             "--database".into(),
             data_dir.join("mailpit.db").into_os_string(),
         ];
-        Ok(supervisor.start("mailpit", &installation.executable, &args, Some(&data_dir))?)
+        self.start_managed_service(
+            "mailpit",
+            "default",
+            &installation,
+            &[ports.mailpit_http, ports.mailpit_smtp],
+            &args,
+            &data_dir,
+        )
     }
     pub fn stop_mailpit(&self) -> Result<ServiceStatus> {
-        self.supervisor().stop("mailpit")?;
-        self.mailpit_status()
+        self.stop_managed_service("mailpit", "default")
+    }
+    pub fn meilisearch_status(&self) -> Result<ServiceStatus> {
+        Ok(self.supervisor().status("meilisearch")?)
+    }
+    pub fn start_meilisearch(&self) -> Result<ProcessState> {
+        let installation = self
+            .installed(Some("meilisearch"))?
+            .into_iter()
+            .max_by_key(|entry| numeric_version(&entry.version))
+            .ok_or_else(|| OrchestError::RuntimeNotInstalled("meilisearch".into()))?;
+        let port = self.config()?.ports.meilisearch_http;
+        let data_dir = self.root.join("data/meilisearch");
+        let args: Vec<OsString> = vec![
+            "--http-addr".into(),
+            format!("127.0.0.1:{port}").into(),
+            "--db-path".into(),
+            data_dir.join("data.ms").into_os_string(),
+            "--env".into(),
+            "development".into(),
+        ];
+        self.start_managed_service(
+            "meilisearch",
+            "default",
+            &installation,
+            &[port],
+            &args,
+            &data_dir,
+        )
+    }
+    pub fn stop_meilisearch(&self) -> Result<ServiceStatus> {
+        self.stop_managed_service("meilisearch", "default")
+    }
+    pub fn service_status(&self, name: &str) -> Result<ServiceStatus> {
+        match name {
+            "mailpit" => self.mailpit_status(),
+            "meilisearch" => self.meilisearch_status(),
+            _ => Err(OrchestError::InvalidInput(format!(
+                "unknown service: {name}"
+            ))),
+        }
+    }
+    pub fn start_service(&self, name: &str) -> Result<ProcessState> {
+        match name {
+            "mailpit" => self.start_mailpit(),
+            "meilisearch" => self.start_meilisearch(),
+            _ => Err(OrchestError::InvalidInput(format!(
+                "unknown service: {name}"
+            ))),
+        }
+    }
+    pub fn stop_service(&self, name: &str) -> Result<ServiceStatus> {
+        match name {
+            "mailpit" => self.stop_mailpit(),
+            "meilisearch" => self.stop_meilisearch(),
+            _ => Err(OrchestError::InvalidInput(format!(
+                "unknown service: {name}"
+            ))),
+        }
     }
     pub fn doctor(&self) -> Vec<Check> {
         let mut checks = Vec::new();
@@ -811,21 +986,15 @@ impl Orchest {
                         .or_default()
                         .push(port.configured_for.clone());
                 }
-                let mailpit_running = self
-                    .mailpit_status()
-                    .is_ok_and(|status| status == ServiceStatus::Running);
                 for port in ports {
                     let duplicate = configured
                         .get(&port.port)
                         .is_some_and(|owners| owners.len() > 1);
-                    let managed = mailpit_running
-                        && matches!(
-                            port.configured_for.as_str(),
-                            "mailpit_http" | "mailpit_smtp"
-                        );
                     checks.push(Check {
                         name: format!("port {} ({})", port.port, port.configured_for),
-                        level: if duplicate || (!port.available && !managed) {
+                        level: if duplicate
+                            || !matches!(port.state, PortState::Available | PortState::Managed)
+                        {
                             "warn"
                         } else {
                             "ok"
@@ -835,12 +1004,25 @@ impl Orchest {
                                 "configured for multiple services: {}",
                                 configured[&port.port].join(", ")
                             )
-                        } else if managed && !port.available {
-                            "occupied by managed Mailpit".into()
-                        } else if !port.available {
-                            "unavailable (occupied or permission denied)".into()
                         } else {
-                            "available".into()
+                            match port.state {
+                                PortState::Managed => format!(
+                                    "occupied by managed {}",
+                                    port.owner.as_deref().unwrap_or("service")
+                                ),
+                                PortState::Reserved => format!(
+                                    "reserved by {}, but not listening",
+                                    port.owner.as_deref().unwrap_or("service")
+                                ),
+                                PortState::StaleClaim => format!(
+                                    "stale claim by {}",
+                                    port.owner.as_deref().unwrap_or("service")
+                                ),
+                                PortState::Unavailable => {
+                                    "unavailable (external process or permission denied)".into()
+                                }
+                                PortState::Available => "available".into(),
+                            }
                         },
                     });
                 }
@@ -907,40 +1089,78 @@ impl Orchest {
 
     pub fn ports(&self) -> Result<Vec<PortInfo>> {
         let ports = self.config()?.ports;
-        Ok([
-            ("nginx_http", ports.nginx_http),
-            ("nginx_https", ports.nginx_https),
-            ("mysql", ports.mysql),
-            ("mariadb", ports.mariadb),
-            ("mongodb", ports.mongodb),
-            ("redis", ports.redis),
-            ("mailpit_http", ports.mailpit_http),
-            ("mailpit_smtp", ports.mailpit_smtp),
-        ]
-        .into_iter()
-        .map(|(name, port)| PortInfo {
-            port,
-            configured_for: name.into(),
-            available: port_available(port),
-        })
-        .collect())
+        let db = self.connect()?;
+        let configured = configured_ports(&ports);
+        let mut result: Vec<_> = configured
+            .iter()
+            .map(|(name, port)| self.port_info(&db, *port, name))
+            .collect::<Result<_>>()?;
+        let known: std::collections::BTreeSet<_> =
+            configured.iter().map(|(_, port)| *port).collect();
+        let mut statement = db.prepare("SELECT port FROM port_claims ORDER BY port")?;
+        for claimed in statement.query_map([], |row| row.get::<_, u16>(0))? {
+            let port = claimed?;
+            if !known.contains(&port) {
+                result.push(self.port_info(&db, port, "unassigned")?);
+            }
+        }
+        Ok(result)
     }
     pub fn check_port(&self, port: u16) -> Result<PortInfo> {
         if port == 0 {
             return Err(OrchestError::InvalidInput("port must be 1..65535".into()));
         }
-        let owner = self
-            .ports()?
+        let configured_for = configured_ports(&self.config()?.ports)
             .into_iter()
-            .find(|item| item.port == port)
-            .map(|item| item.configured_for)
-            .unwrap_or_else(|| "unassigned".into());
+            .find(|(_, configured_port)| *configured_port == port)
+            .map(|(name, _)| name)
+            .unwrap_or("unassigned");
+        self.port_info(&self.connect()?, port, configured_for)
+    }
+    fn port_info(&self, db: &Connection, port: u16, configured_for: &str) -> Result<PortInfo> {
+        let claim: Option<(String, String)> = db
+            .query_row(
+                "SELECT service_id,instance_id FROM port_claims WHERE port=?1",
+                [port],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let available = port_available(port);
+        let (owner, state) = if let Some((service, instance)) = claim {
+            let status = self.supervisor().status_instance(&service, &instance)?;
+            let state = match status {
+                ServiceStatus::Running if available => PortState::Reserved,
+                ServiceStatus::Running => PortState::Managed,
+                _ => PortState::StaleClaim,
+            };
+            (Some(format!("{service}/{instance}")), state)
+        } else if available {
+            (None, PortState::Available)
+        } else {
+            (None, PortState::Unavailable)
+        };
         Ok(PortInfo {
             port,
-            configured_for: owner,
-            available: port_available(port),
+            configured_for: configured_for.into(),
+            available,
+            owner,
+            state,
         })
     }
+}
+
+fn configured_ports(ports: &Ports) -> Vec<(&'static str, u16)> {
+    vec![
+        ("nginx_http", ports.nginx_http),
+        ("nginx_https", ports.nginx_https),
+        ("mysql", ports.mysql),
+        ("mariadb", ports.mariadb),
+        ("mongodb", ports.mongodb),
+        ("redis", ports.redis),
+        ("mailpit_http", ports.mailpit_http),
+        ("mailpit_smtp", ports.mailpit_smtp),
+        ("meilisearch_http", ports.meilisearch_http),
+    ]
 }
 
 fn check_root_writable(root: &Path) -> std::io::Result<()> {
@@ -1039,6 +1259,7 @@ mod tests {
         .unwrap();
         assert!(app.catalog().get("php").is_ok());
         assert!(app.catalog().get("mailpit").is_ok());
+        assert!(app.catalog().get("meilisearch").is_ok());
     }
     #[test]
     fn init_adds_new_php_versions_without_replacing_custom_versions() {
@@ -1074,6 +1295,7 @@ mod tests {
         let config: Config = toml::from_str(old).unwrap();
         assert_eq!(config.ports.mailpit_http, 8025);
         assert_eq!(config.ports.mailpit_smtp, 1025);
+        assert_eq!(config.ports.meilisearch_http, 7700);
     }
     #[cfg(unix)]
     #[test]
@@ -1111,6 +1333,74 @@ mod tests {
         app.config_set("ports.redis", "16379").unwrap();
         assert_eq!(app.check_port(16379).unwrap().configured_for, "redis");
         assert!(app.config_set("ports.redis", "0").is_err());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn port_claims_track_instances_and_recover_after_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        app.config_set("ports.redis", &port.to_string()).unwrap();
+        let installation = Installation {
+            package: "worker".into(),
+            version: "1".into(),
+            platform: "linux-x86_64".into(),
+            installed_at: Utc::now(),
+            source_url: "fixture".into(),
+            executable: PathBuf::from("/bin/sleep"),
+        };
+        let first = app
+            .start_managed_service(
+                "worker",
+                "one",
+                &installation,
+                &[port],
+                &["30".into()],
+                root.path(),
+            )
+            .unwrap();
+        let info = app.check_port(port).unwrap();
+        assert_eq!(info.owner.as_deref(), Some("worker/one"));
+        assert_eq!(info.state, PortState::Reserved);
+        let other_port = if port == u16::MAX { port - 1 } else { port + 1 };
+        app.config_set("ports.redis", &other_port.to_string())
+            .unwrap();
+        assert!(app
+            .ports()
+            .unwrap()
+            .iter()
+            .any(|item| item.port == port && item.owner.as_deref() == Some("worker/one")));
+        assert!(app
+            .start_managed_service(
+                "worker",
+                "two",
+                &installation,
+                &[port],
+                &["30".into()],
+                root.path()
+            )
+            .is_err());
+        app.supervisor().stop_instance("worker", "one").unwrap();
+        assert_eq!(app.check_port(port).unwrap().state, PortState::StaleClaim);
+        let second = app
+            .start_managed_service(
+                "worker",
+                "two",
+                &installation,
+                &[port],
+                &["30".into()],
+                root.path(),
+            )
+            .unwrap();
+        assert_ne!(first.pid, second.pid);
+        assert_eq!(
+            app.check_port(port).unwrap().owner.as_deref(),
+            Some("worker/two")
+        );
+        app.stop_managed_service("worker", "two").unwrap();
+        assert_eq!(app.check_port(port).unwrap().state, PortState::Available);
     }
     #[test]
     fn doctor_reports_database_corruption_without_failing_to_open() {

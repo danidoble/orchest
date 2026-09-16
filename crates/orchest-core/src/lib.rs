@@ -899,10 +899,16 @@ mod tests {
         let external = tempfile::tempdir().unwrap();
         let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
         let default = app.add_project_default("site").unwrap();
-        assert_eq!(default.path, root.path().join("www/site"));
+        assert_eq!(
+            default.path,
+            root.path().join("www/site").canonicalize().unwrap()
+        );
         assert!(default.path.is_dir());
         let external_project = app.add_project(external.path(), "external").unwrap();
-        assert_eq!(external_project.path, external.path());
+        assert_eq!(
+            external_project.path,
+            external.path().canonicalize().unwrap()
+        );
     }
     #[test]
     fn initialization_uses_embedded_catalog_without_source_tree() {

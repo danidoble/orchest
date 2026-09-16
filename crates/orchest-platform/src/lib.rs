@@ -78,6 +78,7 @@ pub fn ensure_layout(root: &Path) -> Result<(), PlatformError> {
         "config/projects",
         "config/packages",
         "data",
+        "www",
         "logs",
         "logs/orchest",
         "runtime",

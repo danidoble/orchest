@@ -1,6 +1,6 @@
 [package]
 name = "orchest-packages"
-version = "0.1.0"
+version = "0.1.0-alpha.2"
 edition.workspace = true
 
 [dependencies]
@@ -13,4 +13,3 @@ tar.workspace = true
 flate2.workspace = true
 tempfile.workspace = true
 orchest-platform = { path = "../orchest-platform" }
-

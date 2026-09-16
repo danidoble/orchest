@@ -47,6 +47,10 @@ enum Command {
         #[command(subcommand)]
         command: PhpCommand,
     },
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     Project {
         #[command(subcommand)]
         command: ProjectCommand,
@@ -105,10 +109,16 @@ enum PhpCommand {
     },
 }
 #[derive(Subcommand)]
+enum ServiceCommand {
+    Status { name: String },
+    Start { name: String },
+    Stop { name: String },
+}
+#[derive(Subcommand)]
 enum ProjectCommand {
     List,
     Add {
-        path: PathBuf,
+        path: Option<PathBuf>,
         #[arg(long)]
         name: String,
     },
@@ -235,9 +245,28 @@ fn run(cli: &Cli) -> Result<(Value, i32), OrchestError> {
             }
             PhpCommand::Default { version } => json!(app.config_set("defaults.php", version)?),
         },
+        Command::Service { command } => match command {
+            ServiceCommand::Status { name } if name == "mailpit" => {
+                json!({"name":name,"status":app.mailpit_status()?})
+            }
+            ServiceCommand::Start { name } if name == "mailpit" => {
+                json!(app.start_mailpit()?)
+            }
+            ServiceCommand::Stop { name } if name == "mailpit" => {
+                json!({"name":name,"status":app.stop_mailpit()?})
+            }
+            _ => {
+                return Err(OrchestError::InvalidInput(
+                    "only mailpit is currently supported".into(),
+                ))
+            }
+        },
         Command::Project { command } => match command {
             ProjectCommand::List => json!(app.projects()?),
-            ProjectCommand::Add { path, name } => json!(app.add_project(path, name)?),
+            ProjectCommand::Add { path, name } => json!(match path {
+                Some(path) => app.add_project(path, name)?,
+                None => app.add_project_default(name)?,
+            }),
             ProjectCommand::Show { name } => json!(app.project(name)?),
             ProjectCommand::Php { name, version } => json!(app.set_project_php(name, version)?),
             ProjectCommand::Exec { name, args } => return exec(&app, Some(name), args, cli.json),

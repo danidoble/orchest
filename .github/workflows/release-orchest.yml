@@ -1,0 +1,98 @@
+name: Release Orchest
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Prerelease version without the v prefix, for example 0.1.0-alpha.2
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: linux
+          - os: windows-2022
+            artifact: windows
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate version
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[1-9][0-9]*$ ]]
+      - name: Install stable Rust tools
+        run: |
+          rustup update stable
+          rustup default stable
+          rustup component add rustfmt clippy
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo build --release --locked -p orchest-cli -p orchest-api
+      - name: Package Linux binaries and installer
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          bash -n scripts/install-linux.sh
+          mkdir -p dist
+          tar -czf "dist/orchest-v${VERSION}-linux-x86_64.tar.gz" \
+            -C target/release orchest orchest-api \
+            -C "$GITHUB_WORKSPACE/scripts" install-linux.sh
+      - name: Package Windows binaries and installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile('scripts/install-windows.ps1', [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -Path target/release/orchest.exe,target/release/orchest-api.exe,scripts/install-windows.ps1 -DestinationPath "dist/orchest-v$env:VERSION-windows-x86_64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchest-${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orchest-*
+          merge-multiple: true
+          path: dist
+      - name: Publish prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "Release already exists" >&2
+            exit 1
+          fi
+          cd dist
+          sha256sum "orchest-v${VERSION}-linux-x86_64.tar.gz" \
+            "orchest-v${VERSION}-windows-x86_64.zip" > SHA256SUMS.txt
+          cd ..
+          gh release create "v${VERSION}" \
+            "dist/orchest-v${VERSION}-linux-x86_64.tar.gz" \
+            "dist/orchest-v${VERSION}-windows-x86_64.zip" \
+            dist/SHA256SUMS.txt \
+            --target "$GITHUB_SHA" --title "Orchest v${VERSION}" \
+            --notes "Alpha build of Orchest CLI and API, with optional installation scripts for Linux and Windows." \
+            --prerelease --latest=false

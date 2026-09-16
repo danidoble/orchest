@@ -14,9 +14,15 @@ cargo build --release -p orchest-cli -p orchest-api
 
 The release binaries are `target/release/orchest` and `target/release/orchest-api` on Linux, or `target\release\orchest.exe` and `target\release\orchest-api.exe` on Windows. The [Rust CI workflow](.github/workflows/rust-ci.yml) compiles and tests the workspace on Ubuntu 24.04 and Windows Server 2022 when started manually with **Run workflow** in GitHub Actions. It does not run on pushes or pull requests, to control billed runner minutes. The workflow uploads the CLI and API binaries as downloadable Actions artifacts (`orchest-linux-x86_64` and `orchest-windows-x86_64`) for testing. CI verifies the Windows build, while installation of managed PHP on Windows still needs an end-to-end test. Building the Rust applications does not build PHP: managed PHP artifacts are obtained separately from the package manifest.
 
-The private [v0.1.0-alpha.1 prerelease](https://github.com/danidoble/orchest/releases/tag/v0.1.0-alpha.1) contains both executables for Linux (`.tar.gz`) and Windows (`.zip`). Download the archive for your operating system from the release page while signed in, extract it, and run `orchest init` (or `orchest.exe init` on Windows). These are test binaries; the Windows PHP installation flow still needs an end-to-end check.
+The public [v0.1.0-alpha.1 prerelease](https://github.com/danidoble/orchest/releases/tag/v0.1.0-alpha.1) contains both executables for Linux (`.tar.gz`) and Windows (`.zip`), but predates the installation scripts below. New prereleases will be created only by the manually triggered [release workflow](.github/workflows/release-orchest.yml); the ordinary Rust CI is also manual to control runner minutes.
 
-Use `--root PATH` or `ORCHEST_ROOT` to override the default root (`~/.local/share/orchest` on Linux; `%LOCALAPPDATA%\Orchest` on Windows). `init` creates configuration, state, logs, cache, and installation directories. It copies the built-in PHP manifest to `config/packages/`, where it can be edited without rebuilding.
+## Install Orchest commands
+
+New Linux prerelease archives include `install-linux.sh` alongside `orchest` and `orchest-api`. Run `bash install-linux.sh` from the extracted archive. It copies both commands to `~/.local/bin` and adds that directory to shell startup files. Open a new terminal and run `orchest init`. It does not use `sudo` or modify system PHP installations.
+
+New Windows prerelease ZIPs include `install-windows.ps1` alongside both `.exe` files. From an **Administrator PowerShell** in the extracted directory, run `powershell -ExecutionPolicy Bypass -File .\install-windows.ps1`. The script downloads Microsoft's x64 Visual C++ Redistributable, verifies its Authenticode signature, installs it, copies the Orchest executables to `C:\Program Files\Orchest`, and adds that directory to the machine `PATH`. Open a new normal-user terminal and run `orchest init`. The installer does not initialize the elevated administrator's data directory. Windows installation and the Redistributable flow still need a VM test.
+
+Use `--root PATH` or `ORCHEST_ROOT` to override the default root (`~/.local/share/orchest` on Linux; `%LOCALAPPDATA%\Orchest` on Windows). `init` creates configuration, state, logs, cache, installation directories, and a default `www/` directory. It copies bundled package manifests to `config/packages/`, where custom sources and versions can be added. Running `init` again merges newly bundled PHP versions into an existing PHP manifest while keeping custom version URLs; it updates the old built-in `{github_repository}` URLs to the public release URLs.
 
 ## CLI
 
@@ -26,16 +32,21 @@ orchest package list
 orchest php install 8.4.15
 orchest php install 8.5.10
 orchest php default 8.5.10
+orchest project add --name my-new-app
 orchest project add ./my-app --name my-app
 orchest project php my-app 8.4.15
 orchest exec php -v
 orchest project exec my-app php -v
+orchest package install mailpit@1.31.1
+orchest service start mailpit
+orchest service status mailpit
+orchest service stop mailpit
 orchest port list
 orchest port check 3306
 orchest doctor --json
 ```
 
-`orchest package install php@8.4.15` is equivalent to `orchest php install 8.4.15`. `--json`, `--quiet`, `--verbose`, and `--root` are global options. `orchest exec` changes `PATH` only for the child process and does not use a system PHP fallback.
+`orchest package install php@8.4.15` is equivalent to `orchest php install 8.4.15`. `project add --name NAME` creates and registers `<root>/www/NAME`; supplying a path continues to register any existing directory. `--json`, `--quiet`, `--verbose`, and `--root` are global options. `orchest exec` changes `PATH` only for the child process and does not use a system PHP fallback.
 
 For an offline or local release test, use `orchest php install 8.4.15 --archive /path/to/php-8.4.15-linux-x86_64.tar.gz`. The same archive validation and staged installation are used. Put global flags before `exec` when using `--json`, for example `orchest --json exec php -v`.
 
@@ -48,30 +59,22 @@ orchest-api ─┘                → orchest-process
                              → orchest-platform
 ```
 
-The reusable core owns project, config, and installation state. The package crate reads TOML manifests and installs from HTTPS archives via staging. The process crate runs managed binaries and provides a supervisor with PID identity checks and persistent logs; service commands have not been connected to it yet. The platform crate handles operating-system paths and atomic writes. The HTTP API calls the same core; a future Tauri adapter can do the same.
+The reusable core owns project, config, and installation state. The package crate reads TOML manifests and installs from HTTPS archives via staging. The process crate runs managed binaries and provides a supervisor with PID identity checks and persistent logs. Mailpit is the first CLI/API-managed service; other services will use the same core. The platform crate handles operating-system paths and atomic writes. The HTTP API calls the same core; a future Tauri adapter can do the same.
 
 ## Local API
 
-Run `ORCHEST_ROOT=/path/to/root cargo run -p orchest-api` after `orchest init`. It listens only on `127.0.0.1`, port `8765` by default (`ORCHEST_API_PORT` overrides the port). The bearer token is created at `runtime/state/api-token` under the Orchest root. Supply it in `Authorization: Bearer <token>` for every request. Current `/api/v1` endpoints cover status, package catalog and installation, projects, PHP assignment, ports, and doctor. Service endpoints will be added when service supervision exists. Port checks test whether a loopback TCP bind succeeds; they do not identify another process using the port yet.
+Run `ORCHEST_ROOT=/path/to/root cargo run -p orchest-api` after `orchest init`. It listens only on `127.0.0.1`, port `8765` by default (`ORCHEST_API_PORT` overrides the port). The bearer token is created at `runtime/state/api-token` under the Orchest root. Supply it in `Authorization: Bearer <token>` for every request. Current `/api/v1` endpoints cover status, package catalog and installation, projects, PHP assignment, ports, doctor, and Mailpit service status/start/stop (`/api/v1/services/mailpit`, `/start`, `/stop`). Mailpit listens on loopback ports `8025` (HTTP) and `1025` (SMTP) by default, configurable through `ports.mailpit_http` and `ports.mailpit_smtp`. Its database lives under `<root>/data/mailpit`. Port checks test whether a loopback TCP bind succeeds; they do not identify another process using the port yet.
 
 ## PHP release artifacts
 
 Windows uses the official PHP ZIP files listed in `manifests/php.toml`. Linux uses Orchest-built release archives because PHP does not publish official precompiled Linux binaries. The workflow in `.github/workflows/release-php-linux.yml` builds PHP CLI and FPM from PHP source in an Ubuntu 22.04 container, bundles non-glibc libraries, and tests the archive on Ubuntu 22.04, Ubuntu 24.04, and Debian 12 before publishing it to GitHub Releases.
 
-The repository is `danidoble/orchest`. PHP 8.4.15 and 8.5.10 Linux artifacts were published as revision 1 on 2026-09-16. Set `orchest config set sources.github_repository danidoble/orchest` in each Orchest installation. This selects the repository for the Linux release URLs; it does not change Windows downloads. New PHP versions require a manifest entry and a workflow run. Rebuilds use a new revision and a matching manifest URL. `config/packages/php.toml` in an existing Orchest root is user-controlled and is not overwritten by `init`.
+The repository is public. The bundled [PHP manifest](manifests/php.toml) lists Windows ZIPs and direct Linux release URLs for PHP 8.2.33, 8.3.33, 8.4.15, and 8.5.10. No manual GitHub repository setting is needed. Custom package manifests and `--archive` remain available for versions or sources outside this catalog. Rebuilds use a new packaging revision and a matching manifest URL.
 
-Each artifact requires `url`, `archive` (`zip` or `tar.gz`), and `executable`; `strip_components` is optional. Managed PHP on Windows may need the Microsoft Visual C++ runtime supplied by the OS or installed separately. This repository is private, and the current installer does not authenticate GitHub release downloads. To test the published Linux assets now, download them with authenticated `gh` and install from the local archives:
+Each artifact requires `url`, `archive` (`zip` or `tar.gz`), and `executable`; `strip_components` is optional. Windows PHP ZIPs require Microsoft's Visual C++ runtime, which the new Windows installer handles. On Linux, `orchest php install 8.2.33` downloads directly from the public release URL; `--archive PATH` remains for external or offline archives. All four versions use isolated directories under the Orchest root.
 
-```sh
-gh release download php-8.4.15-linux-x86_64-r1 --repo danidoble/orchest --dir ./orchest-php
-gh release download php-8.5.10-linux-x86_64-r1 --repo danidoble/orchest --dir ./orchest-php
-orchest init
-orchest php install 8.4.15 --archive ./orchest-php/php-8.4.15-linux-x86_64.tar.gz
-orchest php install 8.5.10 --archive ./orchest-php/php-8.5.10-linux-x86_64.tar.gz
-```
-
-The downloaded assets and both `php-fpm` binaries were verified on Linux after installation. Direct `orchest php install <version>` remains pending until authenticated downloads are implemented or the repository is public.
+Direct HTTPS installation and CLI execution of all four Linux versions passed in an isolated Ubuntu 26.04 container. This did not install any PHP version into the host system.
 
 ## Current limits
 
-This is an early CLI and API slice. Linux PHP artifacts are published, but private release URLs still need authenticated installer downloads. The process supervisor is not connected to service commands yet; Nginx/Apache/database integrations, certificates, and desktop UI remain to be implemented. The API currently runs synchronous core operations directly for its short handlers; long downloads use a blocking worker.
+This is an early CLI and API slice. The installers and Mailpit service still need Windows VM verification. Nginx/Apache, Node/Corepack, databases, certificates, schedulers, queues, and desktop UI remain to be implemented. The API currently runs synchronous core operations directly for its short handlers; long downloads use a blocking worker.

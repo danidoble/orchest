@@ -2,6 +2,7 @@
 use chrono::{DateTime, Utc};
 use orchest_packages::{Artifact, Catalog, PackageError};
 use orchest_platform::{atomic_write, ensure_layout, Platform};
+use orchest_process::{ProcessState, ServiceStatus, Supervisor};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -67,6 +68,16 @@ pub struct Ports {
     pub mariadb: u16,
     pub mongodb: u16,
     pub redis: u16,
+    #[serde(default = "default_mailpit_http_port")]
+    pub mailpit_http: u16,
+    #[serde(default = "default_mailpit_smtp_port")]
+    pub mailpit_smtp: u16,
+}
+fn default_mailpit_http_port() -> u16 {
+    8025
+}
+fn default_mailpit_smtp_port() -> u16 {
+    1025
 }
 impl Default for Config {
     fn default() -> Self {
@@ -83,6 +94,8 @@ impl Default for Config {
                 mariadb: 3307,
                 mongodb: 27017,
                 redis: 6379,
+                mailpit_http: default_mailpit_http_port(),
+                mailpit_smtp: default_mailpit_smtp_port(),
             },
             sources: Sources::default(),
         }
@@ -128,6 +141,7 @@ pub struct Orchest {
     catalog: Catalog,
 }
 const BUILTIN_PHP_MANIFEST: &str = include_str!("../../../manifests/php.toml");
+const BUILTIN_MAILPIT_MANIFEST: &str = include_str!("../../../manifests/mailpit.toml");
 impl Orchest {
     pub fn root(&self) -> &Path {
         &self.root
@@ -157,6 +171,51 @@ impl Orchest {
         let builtin_path = root.join("config/packages/php.toml");
         if !builtin_path.exists() {
             atomic_write(&builtin_path, BUILTIN_PHP_MANIFEST.as_bytes())?;
+        } else {
+            let mut current: orchest_packages::Manifest =
+                toml::from_str(&fs::read_to_string(&builtin_path)?)
+                    .map_err(|e| OrchestError::Config(e.to_string()))?;
+            if current.package.id == "php" {
+                let builtin: orchest_packages::Manifest = toml::from_str(BUILTIN_PHP_MANIFEST)
+                    .map_err(|e| OrchestError::Config(e.to_string()))?;
+                let mut changed = false;
+                for bundled in builtin.versions {
+                    if let Some(existing) = current
+                        .versions
+                        .iter_mut()
+                        .find(|version| version.version == bundled.version)
+                    {
+                        if let (Some(installed), Some(released)) = (
+                            existing.platforms.get_mut("linux-x86_64"),
+                            bundled.platforms.get("linux-x86_64"),
+                        ) {
+                            let old_default = format!(
+                                "https://github.com/{{github_repository}}/releases/download/php-{}-linux-x86_64-r1/php-{}-linux-x86_64.tar.gz",
+                                bundled.version, bundled.version
+                            );
+                            if installed.url == old_default {
+                                installed.url = released.url.clone();
+                                changed = true;
+                            }
+                        }
+                    } else {
+                        current.versions.push(bundled);
+                        changed = true;
+                    }
+                }
+                if changed {
+                    atomic_write(
+                        &builtin_path,
+                        toml::to_string_pretty(&current)
+                            .map_err(|e| OrchestError::Config(e.to_string()))?
+                            .as_bytes(),
+                    )?;
+                }
+            }
+        }
+        let mailpit_path = root.join("config/packages/mailpit.toml");
+        if !mailpit_path.exists() {
+            atomic_write(&mailpit_path, BUILTIN_MAILPIT_MANIFEST.as_bytes())?;
         }
         let config_path = root.join("config/orchest.toml");
         if !config_path.exists() {
@@ -219,6 +278,8 @@ impl Orchest {
                     "ports.mariadb" => config.ports.mariadb = port,
                     "ports.mongodb" => config.ports.mongodb = port,
                     "ports.redis" => config.ports.redis = port,
+                    "ports.mailpit_http" => config.ports.mailpit_http = port,
+                    "ports.mailpit_smtp" => config.ports.mailpit_smtp = port,
                     _ => {
                         return Err(OrchestError::InvalidInput(format!(
                             "unknown port key: {key}"
@@ -380,6 +441,16 @@ impl Orchest {
                 "removal requires an exact version".into(),
             ));
         }
+        if package == "mailpit"
+            && self.mailpit_status()? == ServiceStatus::Running
+            && self.supervisor().state("mailpit")?.is_some_and(|state| {
+                installation.executable.canonicalize().ok() == Some(state.executable)
+            })
+        {
+            return Err(OrchestError::PackageInUse(
+                "mailpit service is running".into(),
+            ));
+        }
         if package == "php" {
             let config = self.config()?;
             let users: Vec<_> = self
@@ -508,6 +579,23 @@ impl Orchest {
         }
         Ok(project)
     }
+    pub fn add_project_default(&self, name: &str) -> Result<Project> {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(OrchestError::InvalidInput(
+                "project name must contain only letters, digits, _ or -".into(),
+            ));
+        }
+        if self.projects()?.iter().any(|project| project.name == name) {
+            return Err(OrchestError::ProjectExists(name.into()));
+        }
+        let path = self.root.join("www").join(name);
+        fs::create_dir_all(&path)?;
+        self.add_project(&path, name)
+    }
     pub fn set_project_php(&self, name: &str, requested: &str) -> Result<Project> {
         self.project(name)?;
         let installed = self.resolve_installed("php", requested)?;
@@ -574,6 +662,51 @@ impl Orchest {
             String::from_utf8_lossy(&output.stderr).into_owned(),
         ))
     }
+    fn supervisor(&self) -> Supervisor {
+        Supervisor::new(
+            self.root.join("runtime/state/services"),
+            self.root.join("logs/services"),
+        )
+    }
+    pub fn mailpit_status(&self) -> Result<ServiceStatus> {
+        Ok(self.supervisor().status("mailpit")?)
+    }
+    pub fn start_mailpit(&self) -> Result<ProcessState> {
+        let supervisor = self.supervisor();
+        if supervisor.status("mailpit")? == ServiceStatus::Running {
+            return Err(OrchestError::PackageInUse(
+                "mailpit service is running".into(),
+            ));
+        }
+        let installation = self
+            .installed(Some("mailpit"))?
+            .into_iter()
+            .max_by_key(|entry| numeric_version(&entry.version))
+            .ok_or_else(|| OrchestError::RuntimeNotInstalled("mailpit".into()))?;
+        let ports = self.config()?.ports;
+        for port in [ports.mailpit_http, ports.mailpit_smtp] {
+            if !port_available(port) {
+                return Err(OrchestError::InvalidInput(format!(
+                    "port {port} is unavailable for Mailpit"
+                )));
+            }
+        }
+        let data_dir = self.root.join("data/mailpit");
+        fs::create_dir_all(&data_dir)?;
+        let args: Vec<OsString> = vec![
+            "--listen".into(),
+            format!("127.0.0.1:{}", ports.mailpit_http).into(),
+            "--smtp".into(),
+            format!("127.0.0.1:{}", ports.mailpit_smtp).into(),
+            "--database".into(),
+            data_dir.join("mailpit.db").into_os_string(),
+        ];
+        Ok(supervisor.start("mailpit", &installation.executable, &args, Some(&data_dir))?)
+    }
+    pub fn stop_mailpit(&self) -> Result<ServiceStatus> {
+        self.supervisor().stop("mailpit")?;
+        self.mailpit_status()
+    }
     pub fn doctor(&self) -> Vec<Check> {
         let mut checks = Vec::new();
         checks.push(Check {
@@ -613,6 +746,27 @@ impl Orchest {
                 detail: e.to_string(),
             }),
         }
+        if self
+            .installed(Some("mailpit"))
+            .is_ok_and(|items| !items.is_empty())
+        {
+            match self.mailpit_status() {
+                Ok(status) => checks.push(Check {
+                    name: "mailpit service".into(),
+                    level: if status == ServiceStatus::Stale {
+                        "warn"
+                    } else {
+                        "ok"
+                    },
+                    detail: format!("{status:?}").to_lowercase(),
+                }),
+                Err(error) => checks.push(Check {
+                    name: "mailpit service".into(),
+                    level: "error",
+                    detail: error.to_string(),
+                }),
+            }
+        }
         if let Ok(projects) = self.projects() {
             for project in projects {
                 checks.push(Check {
@@ -638,6 +792,14 @@ impl Orchest {
                 }
             }
             if target == "linux-x86_64"
+                && self.catalog.list().iter().any(|manifest| {
+                    manifest.versions.iter().any(|version| {
+                        version
+                            .platforms
+                            .get(target)
+                            .is_some_and(|artifact| artifact.url.contains("{github_repository}"))
+                    })
+                })
                 && self
                     .config()
                     .is_ok_and(|c| c.sources.github_repository.is_none())
@@ -661,6 +823,8 @@ impl Orchest {
             ("mariadb", ports.mariadb),
             ("mongodb", ports.mongodb),
             ("redis", ports.redis),
+            ("mailpit_http", ports.mailpit_http),
+            ("mailpit_smtp", ports.mailpit_smtp),
         ]
         .into_iter()
         .map(|(name, port)| PortInfo {
@@ -730,6 +894,17 @@ mod tests {
         assert_eq!(app.project("example").unwrap().id, project.id);
     }
     #[test]
+    fn default_project_lives_in_www_and_external_paths_still_work() {
+        let root = tempfile::tempdir().unwrap();
+        let external = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        let default = app.add_project_default("site").unwrap();
+        assert_eq!(default.path, root.path().join("www/site"));
+        assert!(default.path.is_dir());
+        let external_project = app.add_project(external.path(), "external").unwrap();
+        assert_eq!(external_project.path, external.path());
+    }
+    #[test]
     fn initialization_uses_embedded_catalog_without_source_tree() {
         let root = tempfile::tempdir().unwrap();
         let app = Orchest::init(
@@ -738,6 +913,42 @@ mod tests {
         )
         .unwrap();
         assert!(app.catalog().get("php").is_ok());
+        assert!(app.catalog().get("mailpit").is_ok());
+    }
+    #[test]
+    fn init_adds_new_php_versions_without_replacing_custom_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        let manifest_path = root.path().join("config/packages/php.toml");
+        let mut manifest: orchest_packages::Manifest =
+            toml::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest.versions.retain(|v| v.version != "8.2.33");
+        manifest.versions[0]
+            .platforms
+            .get_mut("linux-x86_64")
+            .unwrap()
+            .url = "https://example.test/custom.tar.gz".into();
+        fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+        drop(app);
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        assert!(app
+            .catalog()
+            .artifact("php", "8.2.33", "linux-x86_64")
+            .is_ok());
+        assert_eq!(
+            app.catalog()
+                .artifact("php", "8.3.33", "linux-x86_64")
+                .unwrap()
+                .url,
+            "https://example.test/custom.tar.gz"
+        );
+    }
+    #[test]
+    fn old_config_receives_mailpit_port_defaults() {
+        let old = "[defaults]\nweb_server='nginx'\ndomain_suffix='test'\n[ports]\nnginx_http=80\nnginx_https=443\nmysql=3306\nmariadb=3307\nmongodb=27017\nredis=6379\n";
+        let config: Config = toml::from_str(old).unwrap();
+        assert_eq!(config.ports.mailpit_http, 8025);
+        assert_eq!(config.ports.mailpit_smtp, 1025);
     }
     #[cfg(unix)]
     #[test]

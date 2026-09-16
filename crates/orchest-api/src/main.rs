@@ -54,6 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/projects", get(projects).post(add_project))
         .route("/api/v1/projects/:name", get(project))
         .route("/api/v1/projects/:name/php", post(set_php))
+        .route("/api/v1/services/:name", get(service_status))
+        .route("/api/v1/services/:name/start", post(start_service))
+        .route("/api/v1/services/:name/stop", post(stop_service))
         .route("/api/v1/doctor", get(doctor))
         .route("/api/v1/ports", get(ports))
         .route("/api/v1/ports/:port", get(check_port))
@@ -157,7 +160,7 @@ async fn projects(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> Api
 #[derive(Deserialize)]
 struct AddProjectBody {
     name: String,
-    path: PathBuf,
+    path: Option<PathBuf>,
 }
 async fn add_project(
     State(state): State<Arc<ApiState>>,
@@ -165,10 +168,12 @@ async fn add_project(
     Json(body): Json<AddProjectBody>,
 ) -> ApiResult {
     authorize(&headers, &state)?;
-    Ok(Json(json!(state
-        .orchest
-        .add_project(&body.path, &body.name)
-        .map_err(error)?)))
+    let project = match body.path {
+        Some(path) => state.orchest.add_project(&path, &body.name),
+        None => state.orchest.add_project_default(&body.name),
+    }
+    .map_err(error)?;
+    Ok(Json(json!(project)))
 }
 async fn project(
     State(state): State<Arc<ApiState>>,
@@ -193,6 +198,65 @@ async fn set_php(
         .orchest
         .set_project_php(&name, &body.version)
         .map_err(error)?)))
+}
+fn supported_service(name: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    if name == "mailpit" {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(
+                json!({"error":{"code":"service_not_found","message":format!("unknown service: {name}")}}),
+            ),
+        ))
+    }
+}
+async fn service_status(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    supported_service(&name)?;
+    Ok(Json(
+        json!({"name":name,"status":state.orchest.mailpit_status().map_err(error)?}),
+    ))
+}
+async fn start_service(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    supported_service(&name)?;
+    let process = tokio::task::spawn_blocking(move || state.orchest.start_mailpit())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":{"code":"task_error","message":e.to_string()}})),
+            )
+        })?
+        .map_err(error)?;
+    Ok(Json(json!(process)))
+}
+async fn stop_service(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    supported_service(&name)?;
+    let status = tokio::task::spawn_blocking(move || state.orchest.stop_mailpit())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":{"code":"task_error","message":e.to_string()}})),
+            )
+        })?
+        .map_err(error)?;
+    Ok(Json(json!({"name":name,"status":status})))
 }
 async fn doctor(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> ApiResult {
     authorize(&headers, &state)?;

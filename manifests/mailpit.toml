@@ -1,0 +1,17 @@
+[package]
+id = "mailpit"
+name = "Mailpit"
+type = "service"
+
+[[versions]]
+version = "1.31.1"
+
+[versions.windows-x86_64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.1/mailpit-windows-amd64.zip"
+archive = "zip"
+executable = "mailpit.exe"
+
+[versions.linux-x86_64]
+url = "https://github.com/axllent/mailpit/releases/download/v1.31.1/mailpit-linux-amd64.tar.gz"
+archive = "tar.gz"
+executable = "mailpit"

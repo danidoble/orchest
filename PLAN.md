@@ -10,35 +10,50 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Catálogo PHP por manifest, descarga HTTPS, extracción ZIP/TAR.GZ con rechazo de rutas inseguras, staging, validación del ejecutable e instalación atómica.
 - [x] Registro de versiones instaladas, alias `orchest php`, desinstalación protegida cuando una versión está asignada, defaults, proyectos y resolución PHP por proyecto.
 - [x] `orchest exec` y `project exec` sin modificar el PATH global; salida JSON, `init`, `status`, `config`, `doctor` y comprobación básica de puertos.
-- [x] Builds Linux locales de PHP 8.4.15 y 8.5.10, con CLI y FPM; ejecución probada en Debian 12 y Ubuntu 24.04. Secuencia del hito probada en Linux con `--archive` y ambas versiones reales.
-- [x] ZIP oficiales de PHP para Windows declarados en el manifest.
-- [x] Publicar los artefactos Linux de PHP 8.4.15 y 8.5.10 en GitHub Releases; verificar digest SHA-256, instalación desde los assets descargados y ejecución de CLI y FPM en Linux.
-- [ ] Probar `orchest php install <versión>` desde la URL HTTPS del manifest, sin `--archive`, tras resolver la autenticación del repositorio privado.
+- [x] Builds Linux de PHP 8.2.33, 8.3.33, 8.4.15 y 8.5.10 con CLI y FPM; los dos nuevos se compilaron localmente en contenedores, sin instalar nada en el anfitrión, y se probaron en Ubuntu 22.04/24.04 y Debian 12.
+- [x] ZIP oficiales de PHP 8.2–8.5 para Windows y URLs públicas de Releases Linux declarados directamente en el manifest; `--archive` permanece para archivos externos.
+- [x] Publicar los cuatro artefactos Linux en GitHub Releases y verificar los digests SHA-256.
+- [x] Instalación HTTPS directa de las cuatro versiones con `orchest php install <versión>` y ejecución de cada CLI verificadas dentro de un contenedor Ubuntu 26.04 aislado.
+- [ ] Repetir el recorrido de instalación PHP en VMs Linux y Windows, con rutas reales de usuario y el Redistributable de Windows.
 - [ ] Ejecutar la secuencia completa del hito en Windows con los ZIP oficiales y verificar `php.ini`, rutas con espacios y dependencias de Visual C++.
 - [ ] Ampliar `doctor` con escritura de raíz, integridad SQLite, puertos ocupados por otros procesos y estados PID obsoletos.
 
 ### Distribución y plataformas (secciones 3–6, 26–27, 30)
 
 - [x] Workflow local de build Linux desde fuentes oficiales de PHP, empaquetado de bibliotecas y pruebas en Ubuntu 22.04/24.04 y Debian 12; workflow de GitHub Releases preparado.
-- [x] Remoto privado confirmado: `danidoble/orchest`. La autenticación local de `gh` funciona fuera del sandbox.
+- [x] Repositorio `danidoble/orchest` ahora público; los assets Linux se pueden descargar sin autenticación.
 - [x] CI manual (`workflow_dispatch`) para compilar, probar y ejecutar Clippy en runners Linux y Windows x64; sin ejecución automática en cada push o pull request para controlar el consumo de minutos.
 - [x] Primera ejecución verde de CI en Linux y Windows: run `35134779304` del 2026-09-16, con compilación release de CLI y API.
 - [x] CI run `35140228611`: binarios CLI y API adjuntos como artifacts descargables para Linux y Windows; archivos descargados y formatos verificados, CLI Linux ejecutada.
-- [ ] Resolver descargas autenticadas de assets de GitHub Releases mientras el repositorio sea privado, o mantener la instalación local con `--archive` hasta hacerlo público. No almacenar tokens en TOML ni logs.
-- [x] Publicar prerelease privado `v0.1.0-alpha.1` con `orchest` y `orchest-api` para Windows y Linux, a partir de la CI verde `35140761844`; digests de assets verificados.
-- [ ] Ejecutar los binarios publicados en Windows y Linux desde una descarga del prerelease; definir instaladores y actualización del propio Orchest.
+- [x] El manifest incluido usa las URLs públicas de GitHub Releases; `init` incorpora versiones PHP nuevas en raíces existentes y reemplaza solo las antiguas URLs predeterminadas con placeholder, conservando URLs personalizadas.
+- [x] Publicar prerelease `v0.1.0-alpha.1` con `orchest` y `orchest-api` para Windows y Linux, a partir de la CI verde `35140761844`; digests de assets verificados.
+- [x] Preparar scripts de instalación: Linux en `~/.local/bin` y PATH del usuario; Windows en `C:\Program Files\Orchest`, PATH de máquina e instalación del VC++ Redistributable x64 oficial con verificación de firma.
+- [x] Preparar workflow **manual** de prerelease para empaquetar binarios e instaladores de ambos sistemas, sin consumo de Actions por cada push.
+- [ ] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta; publicar el siguiente prerelease y definir actualización del propio Orchest.
 - [ ] Versionar los artefactos Linux por revisión y actualizar el manifest al reconstruir una versión; automatizar la comprobación de URLs y compatibilidad antes de publicar.
 
 ### Servicios, proyectos web y datos (secciones 11–16, 19, 24–25)
 
 - [x] Base de supervisor de procesos con PID, identidad del ejecutable, logs y parada; prueba de inicio/parada en Linux.
-- [ ] Conectar el supervisor a comandos y API de servicios; persistir instancias, detectar caídas y probar procesos/árboles en Windows y Linux.
+- [x] Primer servicio: Mailpit 1.31.1 con manifest Windows/Linux, datos aislados y comandos/API de inicio, parada y estado; flujos CLI y API verificados dentro de contenedores Linux, incluida respuesta `401` sin token.
+- [ ] Generalizar el supervisor para múltiples instancias y conectar los demás servicios; detectar caídas, recuperar estado y probar procesos/árboles en Windows y Linux.
 - [ ] Añadir manifests, instalación autocontenida y configuraciones para Nginx, Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
 - [ ] Implementar registro de puertos con propietario real, reservas y diagnóstico de conflictos sin finalizar procesos ajenos.
 - [ ] Implementar proxy de entrada 80/443, selección Nginx/Apache por proyecto y configuraciones generadas y validadas.
 - [ ] Implementar PHP-FPM por versión en Linux y FastCGI con `php-cgi.exe` en Windows; enrutar cada proyecto a su versión PHP.
 - [ ] Implementar datos persistentes por instancia, inicio/parada de proyectos, dominios `.test`, hosts y certificados locales con confianza opcional.
 - [ ] Añadir eventos del núcleo para progreso de instalaciones y cambios de procesos/proyectos.
+
+### Cola de integraciones de servicios (iteraciones posteriores)
+
+- [ ] Servidores web: Nginx y Apache, manifests, configuración validada, rutas por proyecto y proxy 80/443.
+- [ ] Node.js con `npm` y `pnpm` mediante Corepack; selección de versión global y por proyecto.
+- [ ] Bases de datos: MariaDB 11 y 12, MySQL 8, MongoDB y Redis; directorios de datos y puertos por instancia, respaldo y recuperación.
+- [ ] Servicios auxiliares: Meilisearch y RustFS como almacenamiento S3 local; no agregar MinIO.
+- [ ] Herramientas PHP: Composer y phpMyAdmin vinculados a la versión PHP y al proyecto apropiados.
+- [ ] Scheduler y Queue worker por proyecto, con arranque/parada, logs, reinicio y recuperación.
+- [ ] SSL local automático y renovable, con certificados por dominio y confianza del sistema opcional.
+- [ ] Paridad CLI/API para instalación, configuración, inicio, parada, estado y logs de cada servicio.
 
 ### API, escritorio y aceptación (secciones 20–22, 29–31)
 

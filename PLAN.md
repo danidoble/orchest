@@ -1,5 +1,51 @@
 # Orchest — CLI-First Local Development Environment Orchestrator
 
+## Seguimiento de implementación — 2026-09-16
+
+Esta lista registra el estado real del proyecto. `[x]` significa implementado y verificado en el entorno indicado; `[ ]` significa pendiente. Los requisitos detallados siguen en las secciones originales de este documento. La sección 32 describe el objetivo inicial, no su estado actual.
+
+### Hito 1: CLI y PHP administrado (secciones 1–10, 17–18, 23–28)
+
+- [x] Workspace Cargo con `core`, `cli`, `api`, `platform`, `packages` y `process`; configuración TOML y estado de paquetes/proyectos en SQLite.
+- [x] Catálogo PHP por manifest, descarga HTTPS, extracción ZIP/TAR.GZ con rechazo de rutas inseguras, staging, validación del ejecutable e instalación atómica.
+- [x] Registro de versiones instaladas, alias `orchest php`, desinstalación protegida cuando una versión está asignada, defaults, proyectos y resolución PHP por proyecto.
+- [x] `orchest exec` y `project exec` sin modificar el PATH global; salida JSON, `init`, `status`, `config`, `doctor` y comprobación básica de puertos.
+- [x] Builds Linux locales de PHP 8.4.15 y 8.5.10, con CLI y FPM; ejecución probada en Debian 12 y Ubuntu 24.04. Secuencia del hito probada en Linux con `--archive` y ambas versiones reales.
+- [x] ZIP oficiales de PHP para Windows declarados en el manifest.
+- [ ] Publicar los dos artefactos Linux en GitHub Releases y probar `orchest php install <versión>` desde la URL HTTPS del manifest, sin `--archive`.
+- [ ] Ejecutar la secuencia completa del hito en Windows con los ZIP oficiales y verificar `php.ini`, rutas con espacios y dependencias de Visual C++.
+- [ ] Ampliar `doctor` con escritura de raíz, integridad SQLite, puertos ocupados por otros procesos y estados PID obsoletos.
+
+### Distribución y plataformas (secciones 3–6, 26–27, 30)
+
+- [x] Workflow local de build Linux desde fuentes oficiales de PHP, empaquetado de bibliotecas y pruebas en Ubuntu 22.04/24.04 y Debian 12; workflow de GitHub Releases preparado.
+- [x] Remoto privado confirmado: `danidoble/orchest`. La autenticación local de `gh` funciona fuera del sandbox; aún no hay releases publicados.
+- [x] Configuración de CI para compilar, probar y ejecutar Clippy en runners Linux y Windows x64.
+- [ ] Obtener la primera ejecución verde de CI en ambos sistemas; la compilación Windows todavía no está verificada.
+- [ ] Resolver descargas autenticadas de assets de GitHub Releases mientras el repositorio sea privado, o mantener la instalación local con `--archive` hasta hacerlo público. No almacenar tokens en TOML ni logs.
+- [ ] Publicar y probar binarios `orchest` y `orchest-api` para Windows y Linux; definir instaladores y actualización del propio Orchest.
+- [ ] Versionar los artefactos Linux por revisión y actualizar el manifest al reconstruir una versión; automatizar la comprobación de URLs y compatibilidad antes de publicar.
+
+### Servicios, proyectos web y datos (secciones 11–16, 19, 24–25)
+
+- [x] Base de supervisor de procesos con PID, identidad del ejecutable, logs y parada; prueba de inicio/parada en Linux.
+- [ ] Conectar el supervisor a comandos y API de servicios; persistir instancias, detectar caídas y probar procesos/árboles en Windows y Linux.
+- [ ] Añadir manifests, instalación autocontenida y configuraciones para Nginx, Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
+- [ ] Implementar registro de puertos con propietario real, reservas y diagnóstico de conflictos sin finalizar procesos ajenos.
+- [ ] Implementar proxy de entrada 80/443, selección Nginx/Apache por proyecto y configuraciones generadas y validadas.
+- [ ] Implementar PHP-FPM por versión en Linux y FastCGI con `php-cgi.exe` en Windows; enrutar cada proyecto a su versión PHP.
+- [ ] Implementar datos persistentes por instancia, inicio/parada de proyectos, dominios `.test`, hosts y certificados locales con confianza opcional.
+- [ ] Añadir eventos del núcleo para progreso de instalaciones y cambios de procesos/proyectos.
+
+### API, escritorio y aceptación (secciones 20–22, 29–31)
+
+- [x] API local Axum con rutas `/api/v1` para operaciones ya disponibles, enlace loopback y bearer token; probado `401` sin token y estado con token.
+- [ ] Completar rutas y DTO de servicios, proyectos web, datos y eventos; probar errores y seguridad de la API.
+- [ ] Crear adaptador Tauri y frontend React/TypeScript/shadcn después de validar los flujos CLI y API, sin lógica de orquestación en la UI.
+- [ ] Probar el recorrido completo en Windows y Linux: instalación HTTPS, dos versiones PHP, proyecto web, servicios, base de datos, reinicio, recuperación y desinstalación segura.
+
+---
+
 Build a production-quality cross-platform local development environment orchestrator named **Orchest**.
 
 Orchest is conceptually inspired by tools such as Laravel Herd, Laragon and XAMPP, but its architecture must be designed from scratch around these principles:

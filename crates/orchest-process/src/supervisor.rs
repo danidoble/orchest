@@ -11,13 +11,26 @@ use std::{
 };
 use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessState {
     pub service_id: String,
+    #[serde(default = "default_instance_id")]
+    pub instance_id: String,
     pub pid: u32,
     pub executable: PathBuf,
     pub started_at: DateTime<Utc>,
     pub process_start_time: u64,
+}
+
+fn default_instance_id() -> String {
+    "default".into()
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceState {
+    pub instance_id: String,
+    pub status: ServiceStatus,
+    pub process: ProcessState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -36,27 +49,70 @@ impl Supervisor {
     pub fn new(state_dir: PathBuf, log_dir: PathBuf) -> Self {
         Self { state_dir, log_dir }
     }
-    fn state_path(&self, service_id: &str) -> Result<PathBuf, ProcessError> {
-        if service_id.is_empty()
-            || !service_id
+    fn validate_id(id: &str) -> Result<(), ProcessError> {
+        if id.is_empty()
+            || !id
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         {
-            return Err(ProcessError::InvalidState("invalid service id".into()));
+            return Err(ProcessError::InvalidState(
+                "invalid service or instance id".into(),
+            ));
         }
-        Ok(self.state_dir.join(format!("{service_id}.json")))
+        Ok(())
+    }
+    fn state_path(&self, service_id: &str, instance_id: &str) -> Result<PathBuf, ProcessError> {
+        Self::validate_id(service_id)?;
+        Self::validate_id(instance_id)?;
+        if instance_id == "default" {
+            Ok(self.state_dir.join(format!("{service_id}.json")))
+        } else {
+            Ok(self
+                .state_dir
+                .join(service_id)
+                .join(format!("{instance_id}.json")))
+        }
+    }
+    fn log_path(&self, service_id: &str, instance_id: &str) -> PathBuf {
+        let service = self.log_dir.join(service_id);
+        if instance_id == "default" {
+            service
+        } else {
+            service.join(instance_id)
+        }
     }
     pub fn state(&self, service_id: &str) -> Result<Option<ProcessState>, ProcessError> {
-        let path = self.state_path(service_id)?;
+        self.state_instance(service_id, "default")
+    }
+    /// Reads one instance record. The default instance also reads preexisting service records.
+    pub fn state_instance(
+        &self,
+        service_id: &str,
+        instance_id: &str,
+    ) -> Result<Option<ProcessState>, ProcessError> {
+        let path = self.state_path(service_id, instance_id)?;
         if !path.exists() {
             return Ok(None);
         }
-        serde_json::from_slice(&fs::read(path)?)
-            .map(Some)
-            .map_err(|e| ProcessError::InvalidState(e.to_string()))
+        let state: ProcessState = serde_json::from_slice(&fs::read(path)?)
+            .map_err(|e| ProcessError::InvalidState(e.to_string()))?;
+        if state.service_id != service_id || state.instance_id != instance_id {
+            return Err(ProcessError::InvalidState(
+                "state identity does not match its path".into(),
+            ));
+        }
+        Ok(Some(state))
     }
     pub fn status(&self, service_id: &str) -> Result<ServiceStatus, ProcessError> {
-        let Some(state) = self.state(service_id)? else {
+        self.status_instance(service_id, "default")
+    }
+    /// Checks the recorded PID, start time, and executable before reporting it as running.
+    pub fn status_instance(
+        &self,
+        service_id: &str,
+        instance_id: &str,
+    ) -> Result<ServiceStatus, ProcessError> {
+        let Some(state) = self.state_instance(service_id, instance_id)? else {
             return Ok(ServiceStatus::Stopped);
         };
         let system = System::new_all();
@@ -78,7 +134,19 @@ impl Supervisor {
         args: &[OsString],
         cwd: Option<&Path>,
     ) -> Result<ProcessState, ProcessError> {
-        if self.status(service_id)? == ServiceStatus::Running {
+        self.start_instance(service_id, "default", binary, args, cwd)
+    }
+    /// Starts a service instance with its own state file and log directory.
+    pub fn start_instance(
+        &self,
+        service_id: &str,
+        instance_id: &str,
+        binary: &Path,
+        args: &[OsString],
+        cwd: Option<&Path>,
+    ) -> Result<ProcessState, ProcessError> {
+        let state_path = self.state_path(service_id, instance_id)?;
+        if self.status_instance(service_id, instance_id)? == ServiceStatus::Running {
             return Err(ProcessError::AlreadyRunning(service_id.into()));
         }
         if !binary.is_file() {
@@ -89,7 +157,7 @@ impl Supervisor {
         }
         let binary = binary.canonicalize()?;
         fs::create_dir_all(&self.state_dir)?;
-        let log_dir = self.log_dir.join(service_id);
+        let log_dir = self.log_path(service_id, instance_id);
         fs::create_dir_all(&log_dir)?;
         let mut command = Command::new(&binary);
         command
@@ -129,25 +197,34 @@ impl Supervisor {
             })?;
         let state = ProcessState {
             service_id: service_id.into(),
+            instance_id: instance_id.into(),
             pid,
             executable: binary,
             started_at: Utc::now(),
             process_start_time,
         };
+        if let Some(parent) = state_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
         orchest_platform::atomic_write(
-            &self.state_path(service_id)?,
+            &state_path,
             &serde_json::to_vec_pretty(&state)
                 .map_err(|e| ProcessError::InvalidState(e.to_string()))?,
         )?;
         Ok(state)
     }
     pub fn stop(&self, service_id: &str) -> Result<(), ProcessError> {
-        let Some(state) = self.state(service_id)? else {
+        self.stop_instance(service_id, "default")
+    }
+    /// Stops only the matching instance after validating its process identity.
+    pub fn stop_instance(&self, service_id: &str, instance_id: &str) -> Result<(), ProcessError> {
+        let state_path = self.state_path(service_id, instance_id)?;
+        let Some(state) = self.state_instance(service_id, instance_id)? else {
             return Ok(());
         };
         let system = System::new_all();
         let Some(process) = system.process(Pid::from_u32(state.pid)) else {
-            fs::remove_file(self.state_path(service_id)?)?;
+            fs::remove_file(&state_path)?;
             return Ok(());
         };
         if process.start_time() != state.process_start_time
@@ -160,8 +237,8 @@ impl Supervisor {
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if self.status(service_id)? != ServiceStatus::Running {
-                fs::remove_file(self.state_path(service_id)?)?;
+            if self.status_instance(service_id, instance_id)? != ServiceStatus::Running {
+                fs::remove_file(&state_path)?;
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(100));
@@ -174,11 +251,64 @@ impl Supervisor {
                 process.kill();
             }
         }
-        if self.status(service_id)? == ServiceStatus::Running {
+        if self.status_instance(service_id, instance_id)? == ServiceStatus::Running {
             return Err(ProcessError::StopTimeout);
         }
-        fs::remove_file(self.state_path(service_id)?)?;
+        fs::remove_file(&state_path)?;
         Ok(())
+    }
+    /// Lists the persisted instances of a service and their current status.
+    pub fn instances(&self, service_id: &str) -> Result<Vec<InstanceState>, ProcessError> {
+        Self::validate_id(service_id)?;
+        let mut ids = Vec::new();
+        if self.state_path(service_id, "default")?.exists() {
+            ids.push("default".to_string());
+        }
+        let dir = self.state_dir.join(service_id);
+        if dir.exists() {
+            for entry in fs::read_dir(dir)? {
+                let path = entry?.path();
+                if path.extension().is_some_and(|ext| ext == "json") {
+                    if let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) {
+                        if id == "default" {
+                            continue;
+                        }
+                        Self::validate_id(id)?;
+                        ids.push(id.to_string());
+                    }
+                }
+            }
+        }
+        ids.sort();
+        ids.into_iter()
+            .map(|instance_id| {
+                let process = self
+                    .state_instance(service_id, &instance_id)?
+                    .ok_or_else(|| {
+                        ProcessError::InvalidState("state disappeared during listing".into())
+                    })?;
+                let status = self.status_instance(service_id, &instance_id)?;
+                Ok(InstanceState {
+                    instance_id,
+                    status,
+                    process,
+                })
+            })
+            .collect()
+    }
+    /// Removes records for exited or mismatched processes without touching running instances.
+    pub fn recover_stale(&self, service_id: &str) -> Result<Vec<String>, ProcessError> {
+        let mut recovered = Vec::new();
+        for instance in self.instances(service_id)? {
+            if instance.status == ServiceStatus::Stale
+                && self.state_instance(service_id, &instance.instance_id)? == Some(instance.process)
+                && self.status_instance(service_id, &instance.instance_id)? == ServiceStatus::Stale
+            {
+                fs::remove_file(self.state_path(service_id, &instance.instance_id)?)?;
+                recovered.push(instance.instance_id);
+            }
+        }
+        Ok(recovered)
     }
 }
 
@@ -202,5 +332,74 @@ mod tests {
             supervisor.status("fixture").unwrap(),
             ServiceStatus::Stopped
         );
+    }
+
+    #[test]
+    fn isolates_instances_and_recovers_only_stale_state() {
+        let root = tempfile::tempdir().unwrap();
+        let supervisor = Supervisor::new(root.path().join("state"), root.path().join("logs"));
+        let first = supervisor
+            .start_instance(
+                "fixture",
+                "one",
+                Path::new("/bin/sleep"),
+                &["30".into()],
+                None,
+            )
+            .unwrap();
+        let second = supervisor
+            .start_instance(
+                "fixture",
+                "two",
+                Path::new("/bin/sleep"),
+                &["30".into()],
+                None,
+            )
+            .unwrap();
+        assert_ne!(first.pid, second.pid);
+        assert_eq!(supervisor.instances("fixture").unwrap().len(), 2);
+        assert!(root.path().join("logs/fixture/one/stdout.log").exists());
+        assert!(root.path().join("logs/fixture/two/stdout.log").exists());
+        supervisor.stop_instance("fixture", "one").unwrap();
+        assert_eq!(
+            supervisor.status_instance("fixture", "two").unwrap(),
+            ServiceStatus::Running
+        );
+
+        let path = supervisor.state_path("fixture", "one").unwrap();
+        orchest_platform::atomic_write(&path, &serde_json::to_vec(&first).unwrap()).unwrap();
+        assert_eq!(
+            supervisor.status_instance("fixture", "one").unwrap(),
+            ServiceStatus::Stale
+        );
+        assert_eq!(supervisor.recover_stale("fixture").unwrap(), vec!["one"]);
+        assert_eq!(
+            supervisor.status_instance("fixture", "one").unwrap(),
+            ServiceStatus::Stopped
+        );
+        assert_eq!(
+            supervisor.status_instance("fixture", "two").unwrap(),
+            ServiceStatus::Running
+        );
+        supervisor.stop_instance("fixture", "two").unwrap();
+    }
+
+    #[test]
+    fn reads_legacy_default_state_and_rejects_unsafe_ids() {
+        let root = tempfile::tempdir().unwrap();
+        let supervisor = Supervisor::new(root.path().join("state"), root.path().join("logs"));
+        let state = supervisor
+            .start("fixture", Path::new("/bin/sleep"), &["30".into()], None)
+            .unwrap();
+        let path = supervisor.state_path("fixture", "default").unwrap();
+        let mut value = serde_json::to_value(&state).unwrap();
+        value.as_object_mut().unwrap().remove("instance_id");
+        orchest_platform::atomic_write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
+        assert_eq!(
+            supervisor.state("fixture").unwrap().unwrap().instance_id,
+            "default"
+        );
+        assert!(supervisor.status_instance("fixture", "../bad").is_err());
+        supervisor.stop("fixture").unwrap();
     }
 }

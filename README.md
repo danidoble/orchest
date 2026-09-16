@@ -61,7 +61,7 @@ orchest-api ─┘                → orchest-process
                              → orchest-platform
 ```
 
-The reusable core owns project, config, and installation state. The package crate reads TOML manifests and installs from HTTPS archives via staging. The process crate runs managed binaries and provides a supervisor with PID identity checks and persistent logs. Mailpit is the first CLI/API-managed service; other services will use the same core. The platform crate handles operating-system paths and atomic writes. The HTTP API calls the same core; a future Tauri adapter can do the same.
+The reusable core owns project, config, and installation state. The package crate reads TOML manifests and installs from HTTPS archives via staging. The process crate runs managed binaries and provides a supervisor with PID identity checks and persistent logs. The supervisor supports multiple named instances per service, isolated state and logs, instance listing, and explicit cleanup of stale records. Existing Mailpit records remain the `default` instance. Mailpit is the first CLI/API-managed service; other services will use the same core. The platform crate handles operating-system paths and atomic writes. The HTTP API calls the same core; a future Tauri adapter can do the same.
 
 ## Local API
 

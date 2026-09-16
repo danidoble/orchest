@@ -14,8 +14,8 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] ZIP oficiales de PHP 8.2–8.5 para Windows y URLs públicas de Releases Linux declarados directamente en el manifest; `--archive` permanece para archivos externos.
 - [x] Publicar los cuatro artefactos Linux en GitHub Releases y verificar los digests SHA-256.
 - [x] Instalación HTTPS directa de las cuatro versiones con `orchest php install <versión>` y ejecución de cada CLI verificadas dentro de un contenedor Ubuntu 26.04 aislado.
-- [ ] Repetir el recorrido de instalación PHP en VMs Linux y Windows, con rutas reales de usuario y el Redistributable de Windows.
-- [ ] Ejecutar la secuencia completa del hito en Windows con los ZIP oficiales y verificar `php.ini`, rutas con espacios y dependencias de Visual C++.
+- [x] Repetir el recorrido de instalación PHP en VMs Linux y Windows, con rutas reales de usuario y el Redistributable de Windows (validación confirmada por el usuario).
+- [x] Ejecutar la secuencia completa del hito en Windows con los ZIP oficiales y verificar `php.ini`, rutas con espacios y dependencias de Visual C++ (validación confirmada por el usuario).
 - [ ] Ampliar `doctor` con escritura de raíz, integridad SQLite, puertos ocupados por otros procesos y estados PID obsoletos.
 
 ### Distribución y plataformas (secciones 3–6, 26–27, 30)
@@ -32,14 +32,16 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Preparar workflow **manual** de prerelease para empaquetar binarios e instaladores de ambos sistemas, sin consumo de Actions por cada push.
 - [x] Publicar `v0.1.0-alpha.2` con TAR Linux, ZIP Windows e `SHA256SUMS.txt` desde los artifacts de CI; los jobs de build pasaron en ambos sistemas. La publicación manual evitó recompilar tras corregir el job de publicación.
 - [x] Descargar el TAR público de `alpha.2`, verificar SHA-256 y ejecutar su instalador dentro de un contenedor Ubuntu 26.04; `orchest --version` y `init` funcionaron.
-- [ ] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta; definir actualización del propio Orchest.
+- [x] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta (validación confirmada por el usuario).
+- [ ] Definir actualización del propio Orchest.
 - [ ] Versionar los artefactos Linux por revisión y actualizar el manifest al reconstruir una versión; automatizar la comprobación de URLs y compatibilidad antes de publicar.
 
 ### Servicios, proyectos web y datos (secciones 11–16, 19, 24–25)
 
 - [x] Base de supervisor de procesos con PID, identidad del ejecutable, logs y parada; prueba de inicio/parada en Linux.
 - [x] Primer servicio: Mailpit 1.31.1 con manifest Windows/Linux, datos aislados y comandos/API de inicio, parada y estado; flujos CLI y API verificados dentro de contenedores Linux, incluida respuesta `401` sin token.
-- [ ] Generalizar el supervisor para múltiples instancias y conectar los demás servicios; detectar caídas, recuperar estado y probar procesos/árboles en Windows y Linux.
+- [x] Generalizar el supervisor para múltiples instancias, con estado y logs aislados, detección de caídas y recuperación explícita de registros obsoletos; pruebas locales en Linux.
+- [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.
 - [ ] Añadir manifests, instalación autocontenida y configuraciones para Nginx, Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
 - [ ] Implementar registro de puertos con propietario real, reservas y diagnóstico de conflictos sin finalizar procesos ajenos.
 - [ ] Implementar proxy de entrada 80/443, selección Nginx/Apache por proyecto y configuraciones generadas y validadas.

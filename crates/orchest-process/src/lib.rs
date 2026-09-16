@@ -5,7 +5,7 @@ use std::{
     path::Path,
     process::{Command, ExitStatus, Output},
 };
-pub use supervisor::{ProcessState, ServiceStatus, Supervisor};
+pub use supervisor::{InstanceState, ProcessState, ServiceStatus, Supervisor};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProcessError {

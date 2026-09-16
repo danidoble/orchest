@@ -25,7 +25,8 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Primera ejecución verde de CI en Linux y Windows: run `35134779304` del 2026-09-16, con compilación release de CLI y API.
 - [x] CI run `35140228611`: binarios CLI y API adjuntos como artifacts descargables para Linux y Windows; archivos descargados y formatos verificados, CLI Linux ejecutada.
 - [ ] Resolver descargas autenticadas de assets de GitHub Releases mientras el repositorio sea privado, o mantener la instalación local con `--archive` hasta hacerlo público. No almacenar tokens en TOML ni logs.
-- [ ] Publicar y probar binarios `orchest` y `orchest-api` para Windows y Linux; definir instaladores y actualización del propio Orchest.
+- [x] Publicar prerelease privado `v0.1.0-alpha.1` con `orchest` y `orchest-api` para Windows y Linux, a partir de la CI verde `35140761844`; digests de assets verificados.
+- [ ] Ejecutar los binarios publicados en Windows y Linux desde una descarga del prerelease; definir instaladores y actualización del propio Orchest.
 - [ ] Versionar los artefactos Linux por revisión y actualizar el manifest al reconstruir una versión; automatizar la comprobación de URLs y compatibilidad antes de publicar.
 
 ### Servicios, proyectos web y datos (secciones 11–16, 19, 24–25)

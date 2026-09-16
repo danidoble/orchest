@@ -1,0 +1,9 @@
+[package]
+name = "orchest-platform"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tempfile.workspace = true
+

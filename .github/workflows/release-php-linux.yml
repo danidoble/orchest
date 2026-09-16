@@ -1,0 +1,63 @@
+name: Release managed PHP for Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      php_version:
+        description: PHP source release to build
+        required: true
+        type: string
+      revision:
+        description: Orchest packaging revision, increment for a rebuild
+        required: true
+        default: '1'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release identity
+        env:
+          PHP_VERSION: ${{ inputs.php_version }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$PHP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$REVISION" =~ ^[1-9][0-9]*$ ]]
+          echo "RELEASE_TAG=php-${PHP_VERSION}-linux-x86_64-r${REVISION}" >> "$GITHUB_ENV"
+          echo "ASSET=php-${PHP_VERSION}-linux-x86_64.tar.gz" >> "$GITHUB_ENV"
+      - name: Build in Ubuntu 22.04 baseline
+        env:
+          PHP_VERSION: ${{ inputs.php_version }}
+        run: |
+          mkdir -p dist
+          docker run --rm -e PHP_VERSION -v "$PWD:/work:ro" -v "$PWD/dist:/out" ubuntu:22.04 \
+            bash /work/scripts/build-php-linux.sh
+      - name: Smoke test on supported distributions
+        run: |
+          mkdir -p dist/installed
+          tar -xzf "dist/$ASSET" -C dist/installed
+          for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
+            docker run --rm -v "$PWD/dist/installed:/opt/php:ro" "$image" \
+              /opt/php/bin/php -r 'echo PHP_VERSION, PHP_EOL;'
+            docker run --rm -v "$PWD/dist/installed:/opt/php:ro" "$image" \
+              /opt/php/sbin/php-fpm -v
+          done
+      - name: Publish immutable release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PHP_VERSION: ${{ inputs.php_version }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release already exists; increment the packaging revision" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "dist/$ASSET" \
+            --target "$GITHUB_SHA" --title "PHP ${PHP_VERSION} Linux x86_64 r${REVISION}" \
+            --notes "Managed PHP CLI and FPM build for Orchest. Tested on Ubuntu 22.04, Ubuntu 24.04 and Debian 12." \
+            --latest=false

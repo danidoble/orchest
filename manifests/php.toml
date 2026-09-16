@@ -1,0 +1,30 @@
+[package]
+id = "php"
+name = "PHP"
+type = "runtime"
+
+[[versions]]
+version = "8.4.15"
+
+[versions.windows-x86_64]
+url = "https://downloads.php.net/~windows/releases/archives/php-8.4.15-nts-Win32-vs17-x64.zip"
+archive = "zip"
+executable = "php.exe"
+
+[versions.linux-x86_64]
+url = "https://github.com/{github_repository}/releases/download/php-8.4.15-linux-x86_64-r1/php-8.4.15-linux-x86_64.tar.gz"
+archive = "tar.gz"
+executable = "bin/php"
+
+[[versions]]
+version = "8.5.10"
+
+[versions.windows-x86_64]
+url = "https://downloads.php.net/~windows/releases/archives/php-8.5.10-nts-Win32-vs17-x64.zip"
+archive = "zip"
+executable = "php.exe"
+
+[versions.linux-x86_64]
+url = "https://github.com/{github_repository}/releases/download/php-8.5.10-linux-x86_64-r1/php-8.5.10-linux-x86_64.tar.gz"
+archive = "tar.gz"
+executable = "bin/php"

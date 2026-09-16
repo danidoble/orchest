@@ -1,0 +1,16 @@
+[package]
+name = "orchest-cli"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "orchest"
+path = "src/main.rs"
+
+[dependencies]
+orchest-core = { path = "../orchest-core" }
+orchest-platform = { path = "../orchest-platform" }
+clap.workspace = true
+serde_json.workspace = true
+tracing-subscriber.workspace = true
+

@@ -50,6 +50,8 @@ orchest doctor --json
 
 `orchest package install php@8.4.15` is equivalent to `orchest php install 8.4.15`. `project add --name NAME` creates and registers `<root>/www/NAME`; supplying a path continues to register any existing directory. `--json`, `--quiet`, `--verbose`, and `--root` are global options. `orchest exec` changes `PATH` only for the child process and does not use a system PHP fallback.
 
+`orchest doctor` checks that the root is writable, reads configuration, runs SQLite `quick_check`, validates installed executables and project paths, reports unavailable configured ports, and flags stale service instance records. It does not remove those records or stop processes. Port diagnostics identify configured uses and a running managed Mailpit instance; other occupied ports are reported as unavailable without claiming a process owner.
+
 For an offline or local release test, use `orchest php install 8.4.15 --archive /path/to/php-8.4.15-linux-x86_64.tar.gz`. The same archive validation and staged installation are used. Put global flags before `exec` when using `--json`, for example `orchest --json exec php -v`.
 
 ## Structure

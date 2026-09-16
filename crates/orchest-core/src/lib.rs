@@ -3,11 +3,12 @@ use chrono::{DateTime, Utc};
 use orchest_packages::{Artifact, Catalog, PackageError};
 use orchest_platform::{atomic_write, ensure_layout, Platform};
 use orchest_process::{ProcessState, ServiceStatus, Supervisor};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
-    fs,
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -151,9 +152,7 @@ impl Orchest {
             return Err(OrchestError::NotInitialized(root));
         }
         let catalog = Catalog::load(manifest_dir)?;
-        let orchest = Self { root, catalog };
-        orchest.connect()?;
-        Ok(orchest)
+        Ok(Self { root, catalog })
     }
     pub fn init(root: PathBuf, manifest_dir: &Path) -> Result<Self> {
         ensure_layout(&root)?;
@@ -709,10 +708,17 @@ impl Orchest {
     }
     pub fn doctor(&self) -> Vec<Check> {
         let mut checks = Vec::new();
-        checks.push(Check {
-            name: "root".into(),
-            level: if self.root.is_dir() { "ok" } else { "error" },
-            detail: self.root.display().to_string(),
+        checks.push(match check_root_writable(&self.root) {
+            Ok(()) => Check {
+                name: "root".into(),
+                level: "ok",
+                detail: format!("writable: {}", self.root.display()),
+            },
+            Err(error) => Check {
+                name: "root".into(),
+                level: "error",
+                detail: format!("{}: {error}", self.root.display()),
+            },
         });
         checks.push(match self.config() {
             Ok(_) => Check {
@@ -726,6 +732,20 @@ impl Orchest {
                 detail: e.to_string(),
             },
         });
+        checks.push(
+            match check_database_integrity(&self.root.join("config/orchest.db")) {
+                Ok(()) => Check {
+                    name: "database".into(),
+                    level: "ok",
+                    detail: "SQLite quick_check passed".into(),
+                },
+                Err(error) => Check {
+                    name: "database".into(),
+                    level: "error",
+                    detail: error,
+                },
+            },
+        );
         match self.installed(None) {
             Ok(installs) => {
                 for install in installs {
@@ -746,35 +766,106 @@ impl Orchest {
                 detail: e.to_string(),
             }),
         }
-        if self
-            .installed(Some("mailpit"))
-            .is_ok_and(|items| !items.is_empty())
-        {
-            match self.mailpit_status() {
-                Ok(status) => checks.push(Check {
-                    name: "mailpit service".into(),
-                    level: if status == ServiceStatus::Stale {
-                        "warn"
-                    } else {
-                        "ok"
-                    },
-                    detail: format!("{status:?}").to_lowercase(),
-                }),
-                Err(error) => checks.push(Check {
-                    name: "mailpit service".into(),
-                    level: "error",
-                    detail: error.to_string(),
-                }),
+        let supervisor = self.supervisor();
+        match supervisor.services() {
+            Ok(services) => {
+                for service in services {
+                    match supervisor.instances(&service) {
+                        Ok(instances) => {
+                            for instance in instances {
+                                checks.push(Check {
+                                    name: format!("service {service}/{}", instance.instance_id),
+                                    level: if instance.status == ServiceStatus::Stale {
+                                        "warn"
+                                    } else {
+                                        "ok"
+                                    },
+                                    detail: format!(
+                                        "{:?} (PID {})",
+                                        instance.status, instance.process.pid
+                                    )
+                                    .to_lowercase(),
+                                });
+                            }
+                        }
+                        Err(error) => checks.push(Check {
+                            name: format!("service {service}"),
+                            level: "error",
+                            detail: error.to_string(),
+                        }),
+                    }
+                }
             }
+            Err(error) => checks.push(Check {
+                name: "service state".into(),
+                level: "error",
+                detail: error.to_string(),
+            }),
         }
-        if let Ok(projects) = self.projects() {
-            for project in projects {
-                checks.push(Check {
-                    name: format!("project {}", project.name),
-                    level: if project.path.is_dir() { "ok" } else { "warn" },
-                    detail: project.path.display().to_string(),
-                });
+        match self.ports() {
+            Ok(ports) => {
+                let mut configured = std::collections::BTreeMap::<u16, Vec<String>>::new();
+                for port in &ports {
+                    configured
+                        .entry(port.port)
+                        .or_default()
+                        .push(port.configured_for.clone());
+                }
+                let mailpit_running = self
+                    .mailpit_status()
+                    .is_ok_and(|status| status == ServiceStatus::Running);
+                for port in ports {
+                    let duplicate = configured
+                        .get(&port.port)
+                        .is_some_and(|owners| owners.len() > 1);
+                    let managed = mailpit_running
+                        && matches!(
+                            port.configured_for.as_str(),
+                            "mailpit_http" | "mailpit_smtp"
+                        );
+                    checks.push(Check {
+                        name: format!("port {} ({})", port.port, port.configured_for),
+                        level: if duplicate || (!port.available && !managed) {
+                            "warn"
+                        } else {
+                            "ok"
+                        },
+                        detail: if duplicate {
+                            format!(
+                                "configured for multiple services: {}",
+                                configured[&port.port].join(", ")
+                            )
+                        } else if managed && !port.available {
+                            "occupied by managed Mailpit".into()
+                        } else if !port.available {
+                            "unavailable (occupied or permission denied)".into()
+                        } else {
+                            "available".into()
+                        },
+                    });
+                }
             }
+            Err(error) => checks.push(Check {
+                name: "ports".into(),
+                level: "error",
+                detail: error.to_string(),
+            }),
+        }
+        match self.projects() {
+            Ok(projects) => {
+                for project in projects {
+                    checks.push(Check {
+                        name: format!("project {}", project.name),
+                        level: if project.path.is_dir() { "ok" } else { "warn" },
+                        detail: project.path.display().to_string(),
+                    });
+                }
+            }
+            Err(error) => checks.push(Check {
+                name: "project state".into(),
+                level: "error",
+                detail: error.to_string(),
+            }),
         }
         if let Ok(target) = Platform::current().and_then(Platform::target) {
             for manifest in self.catalog.list() {
@@ -849,6 +940,34 @@ impl Orchest {
             configured_for: owner,
             available: port_available(port),
         })
+    }
+}
+
+fn check_root_writable(root: &Path) -> std::io::Result<()> {
+    let path = root.join(format!(".orchest-doctor-{}.tmp", Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    let result = file.write_all(b"orchest doctor");
+    drop(file);
+    let cleanup = fs::remove_file(path);
+    result.and(cleanup)
+}
+
+fn check_database_integrity(path: &Path) -> std::result::Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("database is missing: {}", path.display()));
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    let result: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if result == "ok" {
+        Ok(())
+    } else {
+        Err(format!("SQLite quick_check: {result}"))
     }
 }
 
@@ -992,6 +1111,61 @@ mod tests {
         app.config_set("ports.redis", "16379").unwrap();
         assert_eq!(app.check_port(16379).unwrap().configured_for, "redis");
         assert!(app.config_set("ports.redis", "0").is_err());
+    }
+    #[test]
+    fn doctor_reports_database_corruption_without_failing_to_open() {
+        let root = tempfile::tempdir().unwrap();
+        Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        fs::write(
+            root.path().join("config/orchest.db"),
+            b"not a sqlite database",
+        )
+        .unwrap();
+        let app = Orchest::open(
+            root.path().to_path_buf(),
+            &root.path().join("config/packages"),
+        )
+        .unwrap();
+        let checks = app.doctor();
+        assert!(checks
+            .iter()
+            .any(|check| check.name == "database" && check.level == "error"));
+        assert!(checks
+            .iter()
+            .any(|check| check.name == "package state" && check.level == "error"));
+    }
+    #[test]
+    fn doctor_reports_occupied_ports_and_stale_instances() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        app.config_set("ports.redis", &port.to_string()).unwrap();
+        let state_path = root.path().join("runtime/state/services/worker/one.json");
+        fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        let state = ProcessState {
+            service_id: "worker".into(),
+            instance_id: "one".into(),
+            pid: u32::MAX,
+            executable: root.path().join("bin/worker"),
+            started_at: Utc::now(),
+            process_start_time: 0,
+        };
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let checks = app.doctor();
+        assert!(checks
+            .iter()
+            .any(|check| check.name == "root" && check.level == "ok"));
+        assert!(checks
+            .iter()
+            .any(|check| check.name == "database" && check.level == "ok"));
+        assert!(checks
+            .iter()
+            .any(|check| check.name == format!("port {port} (redis)") && check.level == "warn"));
+        assert!(checks
+            .iter()
+            .any(|check| check.name == "service worker/one" && check.level == "warn"));
+        assert!(state_path.exists());
     }
     #[test]
     fn github_release_url_requires_configured_repository() {

@@ -296,6 +296,28 @@ impl Supervisor {
             })
             .collect()
     }
+    /// Lists services with persisted instance records, including legacy default records.
+    pub fn services(&self) -> Result<Vec<String>, ProcessError> {
+        let mut services = std::collections::BTreeSet::new();
+        if !self.state_dir.exists() {
+            return Ok(Vec::new());
+        }
+        for entry in fs::read_dir(&self.state_dir)? {
+            let path = entry?.path();
+            let name = if path.is_dir() {
+                path.file_name().and_then(|name| name.to_str())
+            } else if path.extension().is_some_and(|ext| ext == "json") {
+                path.file_stem().and_then(|name| name.to_str())
+            } else {
+                None
+            };
+            if let Some(name) = name {
+                Self::validate_id(name)?;
+                services.insert(name.to_string());
+            }
+        }
+        Ok(services.into_iter().collect())
+    }
     /// Removes records for exited or mismatched processes without touching running instances.
     pub fn recover_stale(&self, service_id: &str) -> Result<Vec<String>, ProcessError> {
         let mut recovered = Vec::new();

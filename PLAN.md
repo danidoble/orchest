@@ -16,7 +16,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Instalación HTTPS directa de las cuatro versiones con `orchest php install <versión>` y ejecución de cada CLI verificadas dentro de un contenedor Ubuntu 26.04 aislado.
 - [x] Repetir el recorrido de instalación PHP en VMs Linux y Windows, con rutas reales de usuario y el Redistributable de Windows (validación confirmada por el usuario).
 - [x] Ejecutar la secuencia completa del hito en Windows con los ZIP oficiales y verificar `php.ini`, rutas con espacios y dependencias de Visual C++ (validación confirmada por el usuario).
-- [ ] Ampliar `doctor` con escritura de raíz, integridad SQLite, puertos ocupados por otros procesos y estados PID obsoletos.
+- [x] Ampliar `doctor` con prueba de escritura en la raíz, integridad SQLite, diagnóstico de puertos indisponibles y estados PID obsoletos. La propiedad real de puertos ajenos sigue pendiente del registro de puertos.
 
 ### Distribución y plataformas (secciones 3–6, 26–27, 30)
 

@@ -28,8 +28,11 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] El manifest incluido usa las URLs públicas de GitHub Releases; `init` incorpora versiones PHP nuevas en raíces existentes y reemplaza solo las antiguas URLs predeterminadas con placeholder, conservando URLs personalizadas.
 - [x] Publicar prerelease `v0.1.0-alpha.1` con `orchest` y `orchest-api` para Windows y Linux, a partir de la CI verde `35140761844`; digests de assets verificados.
 - [x] Preparar scripts de instalación: Linux en `~/.local/bin` y PATH del usuario; Windows en `C:\Program Files\Orchest`, PATH de máquina e instalación del VC++ Redistributable x64 oficial con verificación de firma.
+- [x] Instalador Linux verificado dentro de un contenedor: copia binarios, añade PATH, ejecuta `orchest init` y crea `www` sin tocar el anfitrión.
 - [x] Preparar workflow **manual** de prerelease para empaquetar binarios e instaladores de ambos sistemas, sin consumo de Actions por cada push.
-- [ ] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta; publicar el siguiente prerelease y definir actualización del propio Orchest.
+- [x] Publicar `v0.1.0-alpha.2` con TAR Linux, ZIP Windows e `SHA256SUMS.txt` desde los artifacts de CI; los jobs de build pasaron en ambos sistemas. La publicación manual evitó recompilar tras corregir el job de publicación.
+- [x] Descargar el TAR público de `alpha.2`, verificar SHA-256 y ejecutar su instalador dentro de un contenedor Ubuntu 26.04; `orchest --version` y `init` funcionaron.
+- [ ] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta; definir actualización del propio Orchest.
 - [ ] Versionar los artefactos Linux por revisión y actualizar el manifest al reconstruir una versión; automatizar la comprobación de URLs y compatibilidad antes de publicar.
 
 ### Servicios, proyectos web y datos (secciones 11–16, 19, 24–25)

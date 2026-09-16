@@ -81,7 +81,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
-          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+          if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release already exists" >&2
             exit 1
           fi
@@ -95,4 +95,4 @@ jobs:
             dist/SHA256SUMS.txt \
             --target "$GITHUB_SHA" --title "Orchest v${VERSION}" \
             --notes "Alpha build of Orchest CLI and API, with optional installation scripts for Linux and Windows." \
-            --prerelease --latest=false
+            --prerelease --latest=false --repo "$GITHUB_REPOSITORY"

@@ -19,9 +19,10 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 ### Distribución y plataformas (secciones 3–6, 26–27, 30)
 
 - [x] Workflow local de build Linux desde fuentes oficiales de PHP, empaquetado de bibliotecas y pruebas en Ubuntu 22.04/24.04 y Debian 12; workflow de GitHub Releases preparado.
-- [x] Remoto privado confirmado: `danidoble/orchest`. La autenticación local de `gh` funciona fuera del sandbox; aún no hay releases publicados.
+- [x] Remoto privado confirmado: `danidoble/orchest`. La autenticación local de `gh` funciona fuera del sandbox.
 - [x] Configuración de CI para compilar, probar y ejecutar Clippy en runners Linux y Windows x64.
-- [ ] Obtener la primera ejecución verde de CI en ambos sistemas; la compilación Windows todavía no está verificada.
+- [x] Primera ejecución verde de CI en Linux y Windows: run `35134779304` del 2026-09-16, con compilación release de CLI y API.
+- [ ] Confirmar en la siguiente ejecución de CI que se adjuntan los binarios CLI y API como artifacts descargables para Linux y Windows.
 - [ ] Resolver descargas autenticadas de assets de GitHub Releases mientras el repositorio sea privado, o mantener la instalación local con `--archive` hasta hacerlo público. No almacenar tokens en TOML ni logs.
 - [ ] Publicar y probar binarios `orchest` y `orchest-api` para Windows y Linux; definir instaladores y actualización del propio Orchest.
 - [ ] Versionar los artefactos Linux por revisión y actualizar el manifest al reconstruir una versión; automatizar la comprobación de URLs y compatibilidad antes de publicar.

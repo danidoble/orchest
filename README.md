@@ -12,7 +12,7 @@ cargo test --workspace
 cargo build --release -p orchest-cli -p orchest-api
 ```
 
-The release binaries are `target/release/orchest` and `target/release/orchest-api` on Linux, or `target\release\orchest.exe` and `target\release\orchest-api.exe` on Windows. The [Rust CI workflow](.github/workflows/rust-ci.yml) is configured to compile and test the workspace on Ubuntu 24.04 and Windows Server 2022. Linux builds and tests have passed locally; **Windows compilation and execution still need their first successful CI run**. Building the Rust applications does not build PHP: managed PHP artifacts are obtained separately from the package manifest.
+The release binaries are `target/release/orchest` and `target/release/orchest-api` on Linux, or `target\release\orchest.exe` and `target\release\orchest-api.exe` on Windows. The [Rust CI workflow](.github/workflows/rust-ci.yml) compiles and tests the workspace on Ubuntu 24.04 and Windows Server 2022; its first run passed on both systems on 2026-09-16. The workflow also uploads the CLI and API binaries as downloadable Actions artifacts (`orchest-linux-x86_64` and `orchest-windows-x86_64`) for testing. This verifies the Windows build, while installation of managed PHP on Windows still needs an end-to-end test. Building the Rust applications does not build PHP: managed PHP artifacts are obtained separately from the package manifest.
 
 Use `--root PATH` or `ORCHEST_ROOT` to override the default root (`~/.local/share/orchest` on Linux; `%LOCALAPPDATA%\Orchest` on Windows). `init` creates configuration, state, logs, cache, and installation directories. It copies the built-in PHP manifest to `config/packages/`, where it can be edited without rebuilding.
 

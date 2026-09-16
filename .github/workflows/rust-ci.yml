@@ -15,7 +15,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2022]
+        include:
+          - os: ubuntu-24.04
+            artifact: orchest-linux-x86_64
+            extension: ''
+          - os: windows-2022
+            artifact: orchest-windows-x86_64
+            extension: .exe
     steps:
       - uses: actions/checkout@v4
       - name: Install stable Rust tools
@@ -33,3 +39,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Build CLI and API release binaries
         run: cargo build --release --locked -p orchest-cli -p orchest-api
+      - name: Upload CLI and API binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            target/release/orchest${{ matrix.extension }}
+            target/release/orchest-api${{ matrix.extension }}
+          if-no-files-found: error

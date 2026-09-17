@@ -28,9 +28,9 @@ confirm() {
 for tool in git cargo python3; do
   command -v "$tool" >/dev/null || { echo "Missing command: $tool" >&2; exit 1; }
 done
-if [[ "$mode" != "resume" && -n "$(git status --porcelain)" ]]; then
-  echo 'Working tree has changes. Commit or save them before publishing.' >&2
-  git status --short
+if [[ "$mode" != "resume" && -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  echo 'Tracked files have changes. Commit or save them before publishing.' >&2
+  git status --short --untracked-files=no
   exit 1
 fi
 
@@ -149,8 +149,8 @@ elif [[ "$mode" == "resume" ]]; then
   confirm "Commit v$version and its release notes?" || exit 0
   git add Cargo.lock crates/*/Cargo.toml RELEASE_NOTES.md
   git commit -m "chore: prepare v$version prerelease"
-  [[ -z "$(git status --porcelain)" ]] || {
-    echo 'Other changes remain. Commit or save them, then run ./publish.sh --retry.' >&2
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || {
+    echo 'Other tracked changes remain. Commit or save them, then run ./publish.sh --retry.' >&2
     exit 1
   }
 else

@@ -376,6 +376,41 @@ mod identity_tests {
     }
 }
 
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn tracks_and_stops_a_managed_windows_process() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let supervisor = Supervisor::new(root.path().join("state"), root.path().join("logs"));
+        let state = supervisor
+            .start(
+                "fixture",
+                &binary,
+                &[
+                    "-NoProfile".into(),
+                    "-Command".into(),
+                    "Start-Sleep -Seconds 30".into(),
+                ],
+                None,
+            )
+            .unwrap();
+        assert!(state.pid > 0);
+        assert_eq!(
+            supervisor.status("fixture").unwrap(),
+            ServiceStatus::Running
+        );
+        supervisor.stop("fixture").unwrap();
+        assert_eq!(
+            supervisor.status("fixture").unwrap(),
+            ServiceStatus::Stopped
+        );
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

@@ -9,8 +9,10 @@ use std::{
     ffi::OsString,
     fs::{self, OpenOptions},
     io::Write,
+    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 use uuid::Uuid;
 
@@ -160,6 +162,12 @@ pub struct Orchest {
     root: PathBuf,
     catalog: Catalog,
 }
+struct ManagedLaunch<'a> {
+    ports: &'a [u16],
+    args: &'a [OsString],
+    data_dir: &'a Path,
+    envs: &'a [(&'a str, &'a Path)],
+}
 const BUILTIN_PHP_MANIFEST: &str = include_str!("../../../manifests/php.toml");
 const BUILTIN_MAILPIT_MANIFEST: &str = include_str!("../../../manifests/mailpit.toml");
 const BUILTIN_MEILISEARCH_MANIFEST: &str = include_str!("../../../manifests/meilisearch.toml");
@@ -266,7 +274,8 @@ impl Orchest {
         connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS installations (package TEXT NOT NULL, version TEXT NOT NULL, platform TEXT NOT NULL, installed_at TEXT NOT NULL, source_url TEXT NOT NULL, executable TEXT NOT NULL, PRIMARY KEY(package,version));
             CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, path TEXT NOT NULL UNIQUE, php_version TEXT, node_version TEXT, domain TEXT, web_server TEXT, database_binding TEXT, ssl_enabled INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS port_claims (port INTEGER PRIMARY KEY, service_id TEXT NOT NULL, instance_id TEXT NOT NULL);")?;
+            CREATE TABLE IF NOT EXISTS port_claims (port INTEGER PRIMARY KEY, service_id TEXT NOT NULL, instance_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS php_web_ports (version TEXT PRIMARY KEY, port INTEGER NOT NULL UNIQUE);")?;
         Ok(connection)
     }
     pub fn config(&self) -> Result<Config> {
@@ -485,6 +494,16 @@ impl Orchest {
                 "{package} service is running"
             )));
         }
+        if package == "php"
+            && self
+                .supervisor()
+                .status_instance("php-web", &php_web_instance_id(version))?
+                == ServiceStatus::Running
+        {
+            return Err(OrchestError::PackageInUse(format!(
+                "php@{version} FastCGI backend is running"
+            )));
+        }
         if package == "php" {
             let config = self.config()?;
             let users: Vec<_> = self
@@ -522,6 +541,10 @@ impl Orchest {
             "DELETE FROM installations WHERE package=?1 AND version=?2",
             params![package, version],
         )?;
+        if package == "php" {
+            self.connect()?
+                .execute("DELETE FROM php_web_ports WHERE version=?1", [version])?;
+        }
         Ok(())
     }
     pub fn projects(&self) -> Result<Vec<Project>> {
@@ -711,6 +734,25 @@ impl Orchest {
         args: &[OsString],
         data_dir: &Path,
     ) -> Result<ProcessState> {
+        self.start_managed_service_with_env(
+            service_id,
+            instance_id,
+            installation,
+            ManagedLaunch {
+                ports,
+                args,
+                data_dir,
+                envs: &[],
+            },
+        )
+    }
+    fn start_managed_service_with_env(
+        &self,
+        service_id: &str,
+        instance_id: &str,
+        installation: &Installation,
+        launch: ManagedLaunch<'_>,
+    ) -> Result<ProcessState> {
         let supervisor = self.supervisor();
         if supervisor.status_instance(service_id, instance_id)? == ServiceStatus::Running {
             return Err(OrchestError::PackageInUse(format!(
@@ -719,7 +761,7 @@ impl Orchest {
         }
         let configured = configured_ports(&self.config()?.ports);
         let mut unique = std::collections::BTreeSet::new();
-        for port in ports {
+        for port in launch.ports {
             if !unique.insert(*port) {
                 return Err(OrchestError::InvalidInput(format!(
                     "port {port} is assigned twice to {service_id}"
@@ -737,7 +779,7 @@ impl Orchest {
         }
         let mut db = self.connect()?;
         let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        for port in ports {
+        for port in launch.ports {
             let prior: Option<(String, String)> = transaction
                 .query_row(
                     "SELECT service_id,instance_id FROM port_claims WHERE port=?1",
@@ -761,15 +803,16 @@ impl Orchest {
                 )));
             }
         }
-        fs::create_dir_all(data_dir)?;
-        let process = supervisor.start_instance(
+        fs::create_dir_all(launch.data_dir)?;
+        let process = supervisor.start_instance_with_env(
             service_id,
             instance_id,
             &installation.executable,
-            args,
-            Some(data_dir),
+            launch.args,
+            Some(launch.data_dir),
+            launch.envs,
         )?;
-        for port in ports {
+        for port in launch.ports {
             if let Err(error) = transaction.execute(
                 "INSERT INTO port_claims (port,service_id,instance_id) VALUES (?1,?2,?3)",
                 params![port, service_id, instance_id],
@@ -860,11 +903,193 @@ impl Orchest {
     pub fn stop_meilisearch(&self) -> Result<ServiceStatus> {
         self.stop_managed_service("meilisearch", "default")
     }
+    fn php_web_port(&self, version: &str) -> Result<u16> {
+        let mut db = self.connect()?;
+        let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(port) = transaction
+            .query_row(
+                "SELECT port FROM php_web_ports WHERE version=?1",
+                [version],
+                |row| row.get::<_, u16>(0),
+            )
+            .optional()?
+        {
+            return Ok(port);
+        }
+        let configured: std::collections::BTreeSet<u16> = configured_ports(&self.config()?.ports)
+            .into_iter()
+            .map(|(_, port)| port)
+            .collect();
+        let mut selected = None;
+        for port in 19000..=19999 {
+            if configured.contains(&port) {
+                continue;
+            }
+            let assigned: Option<u8> = transaction
+                .query_row(
+                    "SELECT 1 FROM php_web_ports WHERE port=?1 UNION SELECT 1 FROM port_claims WHERE port=?1",
+                    [port],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if assigned.is_none() && port_available(port) {
+                selected = Some(port);
+                break;
+            }
+        }
+        let port = selected.ok_or_else(|| {
+            OrchestError::Config("no free PHP FastCGI port in 19000..19999".into())
+        })?;
+        transaction.execute(
+            "INSERT INTO php_web_ports (version,port) VALUES (?1,?2)",
+            params![version, port],
+        )?;
+        transaction.commit()?;
+        Ok(port)
+    }
+    fn nginx_php_versions(&self) -> Result<std::collections::BTreeSet<String>> {
+        let default = self.config()?.defaults.php;
+        let mut versions = std::collections::BTreeSet::new();
+        for project in self.projects()? {
+            if project
+                .web_server
+                .as_deref()
+                .is_some_and(|server| server != "nginx")
+            {
+                continue;
+            }
+            if let Some(version) = project.php_version.as_ref().or(default.as_ref()) {
+                let installation = self.resolve_installed("php", version)?;
+                versions.insert(installation.version);
+            }
+        }
+        Ok(versions)
+    }
+    pub fn php_web_status(&self, version: &str) -> Result<ServiceStatus> {
+        let installed = self.resolve_installed("php", version)?;
+        Ok(self
+            .supervisor()
+            .status_instance("php-web", &php_web_instance_id(&installed.version))?)
+    }
+    pub fn start_php_web(&self, version: &str) -> Result<ProcessState> {
+        let mut installation = self.resolve_installed("php", version)?;
+        let package_root = self.root.join("bin/php").join(&installation.version);
+        installation.executable = if cfg!(windows) {
+            package_root.join("php-cgi.exe")
+        } else {
+            package_root.join("sbin/php-fpm")
+        };
+        if !installation.executable.is_file() {
+            return Err(OrchestError::RuntimeNotInstalled(format!(
+                "php@{version}: FastCGI executable missing at {}",
+                installation.executable.display()
+            )));
+        }
+        let instance_id = php_web_instance_id(&installation.version);
+        if self.supervisor().status_instance("php-web", &instance_id)? == ServiceStatus::Running {
+            return Err(OrchestError::PackageInUse(format!(
+                "php-web/{version} is running"
+            )));
+        }
+        let port = self.php_web_port(&installation.version)?;
+        if configured_ports(&self.config()?.ports)
+            .iter()
+            .any(|(_, configured)| *configured == port)
+        {
+            return Err(OrchestError::Config(format!(
+                "FastCGI port {port} for PHP {version} is also configured for another service"
+            )));
+        }
+        let data_dir = self
+            .root
+            .join("runtime/generated/php-web")
+            .join(&instance_id);
+        fs::create_dir_all(&data_dir)?;
+        let scan_dir = package_root.join("conf.d");
+        fs::create_dir_all(&scan_dir)?;
+        let ini = package_root.join("php.ini");
+        let args: Vec<OsString> = if cfg!(windows) {
+            vec![
+                "-b".into(),
+                format!("127.0.0.1:{port}").into(),
+                "-c".into(),
+                package_root.as_os_str().into(),
+            ]
+        } else {
+            let user = std::env::var("USER").unwrap_or_else(|_| "nobody".into());
+            if user.is_empty()
+                || !user
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+            {
+                return Err(OrchestError::Config(
+                    "invalid current user for PHP-FPM".into(),
+                ));
+            }
+            let fpm_config = format!(
+                "[global]\ndaemonize = no\nerror_log = \"{}\"\n[orchest]\nuser = {user}\nlisten = 127.0.0.1:{port}\nlisten.allowed_clients = 127.0.0.1\npm = ondemand\npm.max_children = 4\npm.process_idle_timeout = 10s\ncatch_workers_output = yes\n",
+                nginx_path(&data_dir.join("php-fpm.log"))?
+            );
+            let path = data_dir.join("php-fpm.conf");
+            atomic_write(&path, fpm_config.as_bytes())?;
+            vec![
+                "-F".into(),
+                "-R".into(),
+                "-y".into(),
+                path.as_os_str().into(),
+                "-c".into(),
+                ini.as_os_str().into(),
+            ]
+        };
+        let envs = if cfg!(windows) {
+            vec![
+                ("PHPRC", package_root.as_path()),
+                ("PHP_INI_SCAN_DIR", scan_dir.as_path()),
+                ("PHP_FCGI_MAX_REQUESTS", Path::new("0")),
+            ]
+        } else {
+            vec![
+                ("PHPRC", package_root.as_path()),
+                ("PHP_INI_SCAN_DIR", scan_dir.as_path()),
+            ]
+        };
+        let process = self.start_managed_service_with_env(
+            "php-web",
+            &instance_id,
+            &installation,
+            ManagedLaunch {
+                ports: &[port],
+                args: &args,
+                data_dir: &data_dir,
+                envs: &envs,
+            },
+        )?;
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        for _ in 0..30 {
+            if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
+                return Ok(process);
+            }
+            if self.supervisor().status_instance("php-web", &instance_id)? != ServiceStatus::Running
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let _ = self.stop_managed_service("php-web", &instance_id);
+        Err(OrchestError::Config(format!(
+            "PHP FastCGI {version} did not listen on 127.0.0.1:{port}; inspect logs/services/php-web/{instance_id}"
+        )))
+    }
+    pub fn stop_php_web(&self, version: &str) -> Result<ServiceStatus> {
+        let installed = self.resolve_installed("php", version)?;
+        self.stop_managed_service("php-web", &php_web_instance_id(&installed.version))
+    }
     pub fn nginx_status(&self) -> Result<ServiceStatus> {
         Ok(self.supervisor().status("nginx")?)
     }
     pub fn nginx_config(&self) -> Result<String> {
         let config = self.config()?;
+        let default_php = config.defaults.php.as_deref();
         let suffix = &config.defaults.domain_suffix;
         if suffix.is_empty()
             || !suffix
@@ -902,9 +1127,22 @@ impl Orchest {
             }
             let root = nginx_path(&project.path)?;
             output.push_str(&format!(
-                "    server {{\n        listen 127.0.0.1:{};\n        server_name {domain};\n        root \"{root}\";\n        index index.html index.htm;\n        location ~ \\.php$ {{ return 404; }}\n        location ~ /\\. {{ return 404; }}\n        location / {{ try_files $uri $uri/ =404; }}\n    }}\n",
+                "    server {{\n        listen 127.0.0.1:{};\n        server_name {domain};\n        root \"{root}\";\n        location ~ /\\. {{ return 404; }}\n",
                 config.ports.nginx_http
             ));
+            if let Some(version) = project.php_version.as_deref().or(default_php) {
+                let php = self.resolve_installed("php", version)?;
+                let port = self.php_web_port(&php.version)?;
+                output.push_str(&format!(
+                    "        index index.php index.html index.htm;\n        location / {{ try_files $uri $uri/ /index.php?$query_string; }}\n        location ~* \\.php$ {{\n            try_files $uri =404;\n            fastcgi_pass 127.0.0.1:{port};\n            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n            fastcgi_param SCRIPT_NAME $fastcgi_script_name;\n            fastcgi_param DOCUMENT_ROOT $document_root;\n            fastcgi_param QUERY_STRING $query_string;\n            fastcgi_param REQUEST_METHOD $request_method;\n            fastcgi_param CONTENT_TYPE $content_type;\n            fastcgi_param CONTENT_LENGTH $content_length;\n            fastcgi_param REQUEST_URI $request_uri;\n            fastcgi_param SERVER_PROTOCOL $server_protocol;\n            fastcgi_param SERVER_NAME $server_name;\n            fastcgi_param SERVER_PORT $server_port;\n            fastcgi_param HTTPS off;\n            fastcgi_param REDIRECT_STATUS 200;\n            fastcgi_param HTTP_AUTHORIZATION $http_authorization;\n        }}\n"
+                ));
+            } else {
+                output.push_str("        index index.html index.htm;\n        location / { try_files $uri $uri/ =404; }\n");
+            }
+            output.push_str(
+                "        location ~* \\.(?:phtml|phar|php[0-9]?|inc)(?:$|[./]) { return 404; }\n",
+            );
+            output.push_str("    }\n");
         }
         output.push_str("}\n");
         Ok(output)
@@ -939,21 +1177,48 @@ impl Orchest {
                 String::from_utf8_lossy(&result.stderr).trim()
             )));
         }
+        let mut started_php: Vec<String> = Vec::new();
+        for version in self.nginx_php_versions()? {
+            if self.php_web_status(&version)? != ServiceStatus::Running {
+                if let Err(error) = self.start_php_web(&version) {
+                    for started in started_php {
+                        let _ = self.stop_php_web(&started);
+                    }
+                    return Err(error);
+                }
+                started_php.push(version);
+            }
+        }
         let mut args = base_args;
         args.extend(["-g".into(), "daemon off; master_process off;".into()]);
-        self.start_managed_service(
+        let result = self.start_managed_service(
             "nginx",
             "default",
             &installation,
             &[self.config()?.ports.nginx_http],
             &args,
             &prefix,
-        )
+        );
+        if result.is_err() {
+            for started in started_php {
+                let _ = self.stop_php_web(&started);
+            }
+        }
+        result
     }
     pub fn stop_nginx(&self) -> Result<ServiceStatus> {
-        self.stop_managed_service("nginx", "default")
+        let status = self.stop_managed_service("nginx", "default")?;
+        for instance in self.supervisor().instances("php-web")? {
+            if instance.status == ServiceStatus::Running {
+                self.stop_managed_service("php-web", &instance.instance_id)?;
+            }
+        }
+        Ok(status)
     }
     pub fn service_status(&self, name: &str) -> Result<ServiceStatus> {
+        if let Some(version) = name.strip_prefix("php@") {
+            return self.php_web_status(version);
+        }
         match name {
             "mailpit" => self.mailpit_status(),
             "meilisearch" => self.meilisearch_status(),
@@ -964,6 +1229,9 @@ impl Orchest {
         }
     }
     pub fn start_service(&self, name: &str) -> Result<ProcessState> {
+        if let Some(version) = name.strip_prefix("php@") {
+            return self.start_php_web(version);
+        }
         match name {
             "mailpit" => self.start_mailpit(),
             "meilisearch" => self.start_meilisearch(),
@@ -974,6 +1242,9 @@ impl Orchest {
         }
     }
     pub fn stop_service(&self, name: &str) -> Result<ServiceStatus> {
+        if let Some(version) = name.strip_prefix("php@") {
+            return self.stop_php_web(version);
+        }
         match name {
             "mailpit" => self.stop_mailpit(),
             "meilisearch" => self.stop_meilisearch(),
@@ -1266,6 +1537,14 @@ fn nginx_path(path: &Path) -> Result<String> {
     Ok(path.replace('\\', "/"))
 }
 
+fn php_web_instance_id(version: &str) -> String {
+    let mut id = String::from("v");
+    for byte in version.bytes() {
+        id.push_str(&format!("{byte:02x}"));
+    }
+    id
+}
+
 fn configured_ports(ports: &Ports) -> Vec<(&'static str, u16)> {
     vec![
         ("nginx_http", ports.nginx_http),
@@ -1374,8 +1653,36 @@ mod tests {
         let config = app.nginx_config().unwrap();
         assert!(config.contains("server_name site.test;"));
         assert!(config.contains(&format!("root \"{}\";", project.path.display())));
-        assert!(config.contains("location ~ \\.php$ { return 404; }"));
+        assert!(config
+            .contains("location ~* \\.(?:phtml|phar|php[0-9]?|inc)(?:$|[./]) { return 404; }"));
         assert!(config.contains("listen 127.0.0.1:80 default_server"));
+    }
+    #[test]
+    fn nginx_uses_distinct_fastcgi_backends_for_project_php_versions() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        for version in ["8.4.15", "8.5.10"] {
+            let binary = root.path().join("bin/php").join(version).join("bin/php");
+            fs::create_dir_all(binary.parent().unwrap()).unwrap();
+            fs::write(&binary, b"fixture").unwrap();
+            app.register_installation("php", version, "linux-x86_64", "fixture".into(), "bin/php")
+                .unwrap();
+        }
+        app.add_project_default("first").unwrap();
+        app.add_project_default("second").unwrap();
+        app.set_project_php("first", "8.4.15").unwrap();
+        app.set_project_php("second", "8.5.10").unwrap();
+        let first_port = app.php_web_port("8.4.15").unwrap();
+        let second_port = app.php_web_port("8.5.10").unwrap();
+        assert_ne!(first_port, second_port);
+        let generated = app.nginx_config().unwrap();
+        assert!(generated.contains(&format!("fastcgi_pass 127.0.0.1:{first_port};")));
+        assert!(generated.contains(&format!("fastcgi_pass 127.0.0.1:{second_port};")));
+        assert!(
+            generated.contains("fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;")
+        );
+        assert!(generated.contains("try_files $uri =404;"));
+        assert_eq!(app.php_web_port("8.4.15").unwrap(), first_port);
     }
     #[test]
     fn initialization_uses_embedded_catalog_without_source_tree() {

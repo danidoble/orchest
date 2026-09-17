@@ -201,7 +201,11 @@ async fn set_php(
         .map_err(error)?)))
 }
 fn supported_service(name: &str) -> Result<(), (StatusCode, Json<Value>)> {
-    if matches!(name, "mailpit" | "meilisearch" | "nginx") {
+    if matches!(name, "mailpit" | "meilisearch" | "nginx")
+        || name
+            .strip_prefix("php@")
+            .is_some_and(|version| !version.is_empty())
+    {
         Ok(())
     } else {
         Err((

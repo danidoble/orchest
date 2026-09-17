@@ -44,19 +44,23 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Registrar reservas de puertos en SQLite por servicio e instancia; rechazar conflictos antes del arranque, mostrar el propietario administrado y liberar reservas al detener. Pruebas locales y flujo real de Meilisearch en Linux.
 - [x] Integrar Meilisearch 1.51.0 como segundo servicio: binarios oficiales Linux/Windows, instalación autocontenida, datos aislados, puerto configurable y comandos/API de inicio, parada y estado. Instalación y arranque verificados en Linux.
 - [x] Integrar Nginx 1.30.5 para archivos estáticos: manifest Windows oficial, receta de build Linux, configuración generada por proyectos, validación `nginx -t`, supervisión y reserva de puerto; comandos CLI/API de estado, inicio, parada y vista previa de configuración. Pruebas Rust y flujo HTTP completo en contenedor Ubuntu 26.04 superados; pruebas funcionales en VMs pendientes.
-- [ ] Publicar el artefacto Linux de Nginx en GitHub Releases para activar su descarga directa desde el manifest.
-- [ ] Validar Nginx en VMs Windows/Linux: instalación, rutas con espacios, configuración, respuesta HTTP por Host, parada y recuperación.
+- [x] Conectar Nginx con PHP por versión en Linux: pools `php-fpm` independientes en loopback, puertos persistentes, selección por proyecto o default, FastCGI con parámetros CGI, arranque automático y parada coordinada. Dos proyectos con PHP 8.4.15 y 8.5.10 respondieron simultáneamente en Ubuntu 26.04 aislado.
+- [x] Implementar el backend Windows mediante `php-cgi.exe -b` con `php.ini` y `conf.d` de cada versión; el ZIP oficial 8.4.15 fue inspeccionado y contiene `php-cgi.exe`. Falta validar ejecución HTTP en VM Windows.
+- [x] Exponer `php@VERSION` por CLI/API para estado, inicio y parada; impedir desinstalar una versión PHP con backend FastCGI en ejecución.
+- [x] Publicar el artefacto Linux de Nginx en GitHub Releases (`nginx-1.30.5-linux-x86_64-r1`) y comprobar que la URL del manifest descarga el mismo SHA-256 (`79439e19028bb7f2d91f9e1ffd3f737c21fd6822a6abade82f7dca9b43b0005d`).
+- [ ] Validar Nginx y PHP en VMs Windows/Linux: instalación, rutas con espacios, `php-cgi.exe`/FPM, dos versiones, respuesta HTTP por Host, parada y recuperación.
+- [ ] Publicar una nueva prerelease de Orchest CLI/API con Nginx y FastCGI antes de la prueba en VMs; el workflow es manual para controlar minutos de GitHub Actions.
 - [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.
-- [ ] Añadir manifests, instalación autocontenida y configuraciones para Nginx, Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
+- [ ] Añadir manifests, instalación autocontenida y configuraciones para Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
 - [ ] Identificar el PID propietario de puertos ocupados por procesos externos y verificar la propiedad del socket del servicio administrado en Windows y Linux.
 - [ ] Implementar proxy de entrada 80/443, selección Nginx/Apache por proyecto y configuraciones generadas y validadas.
-- [ ] Implementar PHP-FPM por versión en Linux y FastCGI con `php-cgi.exe` en Windows; enrutar cada proyecto a su versión PHP.
+- [ ] Completar endurecimiento del proxy PHP: verificar Windows en VM, diagnosticar/reasignar puertos FastCGI ocupados por procesos externos y recuperación tras caídas.
 - [ ] Implementar datos persistentes por instancia, inicio/parada de proyectos, dominios `.test`, hosts y certificados locales con confianza opcional.
 - [ ] Añadir eventos del núcleo para progreso de instalaciones y cambios de procesos/proyectos.
 
 ### Cola de integraciones de servicios (iteraciones posteriores)
 
-- [ ] Completar servidores web: Nginx ya sirve archivos estáticos por proyecto; falta PHP-FPM/FastCGI, HTTPS/proxy 80/443, Apache y pruebas en VMs.
+- [ ] Completar servidores web: Nginx y PHP por proyecto funcionan en Linux aislado y el asset Linux está publicado; falta verificar Windows en VM, HTTPS/proxy 80/443 y Apache.
 - [ ] Node.js con `npm` y `pnpm` mediante Corepack; selección de versión global y por proyecto.
 - [ ] Bases de datos: MariaDB 11 y 12, MySQL 8, MongoDB y Redis; directorios de datos y puertos por instancia, respaldo y recuperación.
 - [x] Servicio auxiliar Meilisearch integrado en CLI/API y probado en Linux.

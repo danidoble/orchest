@@ -145,6 +145,17 @@ impl Supervisor {
         args: &[OsString],
         cwd: Option<&Path>,
     ) -> Result<ProcessState, ProcessError> {
+        self.start_instance_with_env(service_id, instance_id, binary, args, cwd, &[])
+    }
+    pub fn start_instance_with_env(
+        &self,
+        service_id: &str,
+        instance_id: &str,
+        binary: &Path,
+        args: &[OsString],
+        cwd: Option<&Path>,
+        envs: &[(&str, &Path)],
+    ) -> Result<ProcessState, ProcessError> {
         let state_path = self.state_path(service_id, instance_id)?;
         if self.status_instance(service_id, instance_id)? == ServiceStatus::Running {
             return Err(ProcessError::AlreadyRunning(service_id.into()));
@@ -180,6 +191,9 @@ impl Supervisor {
             ));
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
+        }
+        for (name, value) in envs {
+            command.env(name, value);
         }
         let mut child = command.spawn()?;
         let pid = child.id();

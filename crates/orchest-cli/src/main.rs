@@ -113,6 +113,7 @@ enum ServiceCommand {
     Status { name: String },
     Start { name: String },
     Stop { name: String },
+    Config { name: String },
 }
 #[derive(Subcommand)]
 enum ProjectCommand {
@@ -251,6 +252,14 @@ fn run(cli: &Cli) -> Result<(Value, i32), OrchestError> {
             }
             ServiceCommand::Start { name } => json!(app.start_service(name)?),
             ServiceCommand::Stop { name } => json!({"name":name,"status":app.stop_service(name)?}),
+            ServiceCommand::Config { name } if name == "nginx" => {
+                json!({"name":name,"config":app.nginx_config()?})
+            }
+            ServiceCommand::Config { name } => {
+                return Err(OrchestError::InvalidInput(format!(
+                    "configuration preview is unavailable for {name}"
+                )))
+            }
         },
         Command::Project { command } => match command {
             ProjectCommand::List => json!(app.projects()?),

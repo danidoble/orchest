@@ -55,6 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/projects/:name", get(project))
         .route("/api/v1/projects/:name/php", post(set_php))
         .route("/api/v1/services/:name", get(service_status))
+        .route("/api/v1/services/:name/config", get(service_config))
         .route("/api/v1/services/:name/start", post(start_service))
         .route("/api/v1/services/:name/stop", post(stop_service))
         .route("/api/v1/doctor", get(doctor))
@@ -200,7 +201,7 @@ async fn set_php(
         .map_err(error)?)))
 }
 fn supported_service(name: &str) -> Result<(), (StatusCode, Json<Value>)> {
-    if matches!(name, "mailpit" | "meilisearch") {
+    if matches!(name, "mailpit" | "meilisearch" | "nginx") {
         Ok(())
     } else {
         Err((
@@ -210,6 +211,22 @@ fn supported_service(name: &str) -> Result<(), (StatusCode, Json<Value>)> {
             ),
         ))
     }
+}
+async fn service_config(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    if name != "nginx" {
+        supported_service(&name)?;
+        return Err(error(OrchestError::InvalidInput(format!(
+            "configuration preview is unavailable for {name}"
+        ))));
+    }
+    Ok(Json(
+        json!({"name":name,"config":state.orchest.nginx_config().map_err(error)?}),
+    ))
 }
 async fn service_status(
     State(state): State<Arc<ApiState>>,

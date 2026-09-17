@@ -43,6 +43,9 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Generalizar el supervisor para múltiples instancias, con estado y logs aislados, detección de caídas y recuperación explícita de registros obsoletos; pruebas locales en Linux.
 - [x] Registrar reservas de puertos en SQLite por servicio e instancia; rechazar conflictos antes del arranque, mostrar el propietario administrado y liberar reservas al detener. Pruebas locales y flujo real de Meilisearch en Linux.
 - [x] Integrar Meilisearch 1.51.0 como segundo servicio: binarios oficiales Linux/Windows, instalación autocontenida, datos aislados, puerto configurable y comandos/API de inicio, parada y estado. Instalación y arranque verificados en Linux.
+- [x] Integrar Nginx 1.30.5 para archivos estáticos: manifest Windows oficial, receta de build Linux, configuración generada por proyectos, validación `nginx -t`, supervisión y reserva de puerto; comandos CLI/API de estado, inicio, parada y vista previa de configuración. Pruebas Rust y flujo HTTP completo en contenedor Ubuntu 26.04 superados; pruebas funcionales en VMs pendientes.
+- [ ] Publicar el artefacto Linux de Nginx en GitHub Releases para activar su descarga directa desde el manifest.
+- [ ] Validar Nginx en VMs Windows/Linux: instalación, rutas con espacios, configuración, respuesta HTTP por Host, parada y recuperación.
 - [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.
 - [ ] Añadir manifests, instalación autocontenida y configuraciones para Nginx, Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
 - [ ] Identificar el PID propietario de puertos ocupados por procesos externos y verificar la propiedad del socket del servicio administrado en Windows y Linux.
@@ -53,7 +56,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 
 ### Cola de integraciones de servicios (iteraciones posteriores)
 
-- [ ] Servidores web: Nginx y Apache, manifests, configuración validada, rutas por proyecto y proxy 80/443.
+- [ ] Completar servidores web: Nginx ya sirve archivos estáticos por proyecto; falta PHP-FPM/FastCGI, HTTPS/proxy 80/443, Apache y pruebas en VMs.
 - [ ] Node.js con `npm` y `pnpm` mediante Corepack; selección de versión global y por proyecto.
 - [ ] Bases de datos: MariaDB 11 y 12, MySQL 8, MongoDB y Redis; directorios de datos y puertos por instancia, respaldo y recuperación.
 - [x] Servicio auxiliar Meilisearch integrado en CLI/API y probado en Linux.

@@ -47,6 +47,13 @@ orchest package install meilisearch@1.51.0
 orchest service start meilisearch
 orchest service status meilisearch
 orchest service stop meilisearch
+orchest package install nginx@1.30.5
+orchest config set ports.nginx_http 8080
+orchest project add --name demo
+orchest service config nginx
+orchest service start nginx
+orchest service status nginx
+orchest service stop nginx
 orchest port list
 orchest port check 3306
 orchest doctor --json
@@ -55,6 +62,8 @@ orchest doctor --json
 `orchest package install php@8.4.15` is equivalent to `orchest php install 8.4.15`. `project add --name NAME` creates and registers `<root>/www/NAME`; supplying a path continues to register any existing directory. `--json`, `--quiet`, `--verbose`, and `--root` are global options. `orchest exec` changes `PATH` only for the child process and does not use a system PHP fallback.
 
 `orchest doctor` checks that the root is writable, reads configuration, runs SQLite `quick_check`, validates installed executables and project paths, reports unavailable configured ports, and flags stale service instance records. It does not remove those records or stop processes. A SQLite port registry records the service and instance that claimed each port. `port list` and `port check` expose `owner` and `state` (`available`, `managed`, `reserved`, `stale_claim`, or `unavailable`). External port owners are reported as unavailable without claiming a PID.
+
+Nginx serves static files from registered project directories at `<project>.test` on `127.0.0.1:ports.nginx_http`. Add a hosts-file entry for each project domain or send a matching `Host` header. `orchest service config nginx` previews the generated configuration; the API exposes `GET /api/v1/services/nginx/config` with bearer authentication. Starting Nginx writes the configuration under `<root>/runtime/generated/nginx/`, validates it with `nginx -t`, and reserves the HTTP port. Stop and start Nginx after adding projects or changing its port. PHP files return 404 until the per-version FPM/FastCGI integration is added. On Linux, port 80 requires privileges; a user port such as 8080 works without them. The Windows ZIP comes from nginx.org. The Linux manifest URL points to the Orchest release asset that must be published before direct installation works; until then, use `orchest package install nginx@1.30.5 --archive /path/to/nginx-1.30.5-linux-x86_64.tar.gz` with an archive built by `scripts/build-nginx-linux.sh`. A locally built archive is available at `dist/nginx-1.30.5-linux-x86_64.tar.gz` in this checkout.
 
 For an offline or local release test, use `orchest php install 8.4.15 --archive /path/to/php-8.4.15-linux-x86_64.tar.gz`. The same archive validation and staged installation are used. Put global flags before `exec` when using `--json`, for example `orchest --json exec php -v`.
 
@@ -85,4 +94,4 @@ Direct HTTPS installation and CLI execution of all four Linux versions passed in
 
 ## Current limits
 
-This is an early CLI and API slice. Meilisearch installation and service execution passed a Linux smoke test against `/health`; its Windows service flow still needs verification. Nginx/Apache, Node/Corepack, databases, certificates, schedulers, queues, and desktop UI remain to be implemented. The API currently runs synchronous core operations directly for its short handlers; long downloads use a blocking worker.
+This is an early CLI and API slice. Meilisearch installation and service execution passed a Linux smoke test against `/health`; its Windows service flow still needs verification. Nginx static serving passed a full HTTP smoke test in an isolated Ubuntu 26.04 container but has not been tested in the user's VMs; its Linux release asset is not published yet. PHP routing, Apache, Node/Corepack, databases, certificates, schedulers, queues, and desktop UI remain to be implemented. The API currently runs synchronous core operations directly for its short handlers; long downloads use a blocking worker.

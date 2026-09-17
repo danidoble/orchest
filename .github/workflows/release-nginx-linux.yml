@@ -1,0 +1,51 @@
+name: Release managed Nginx for Linux
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: Orchest packaging revision
+        required: true
+        default: '1'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release identity
+        env:
+          REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$REVISION" =~ ^[1-9][0-9]*$ ]]
+          echo "NGINX_VERSION=1.30.5" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=nginx-1.30.5-linux-x86_64-r${REVISION}" >> "$GITHUB_ENV"
+      - name: Build in Ubuntu 22.04 baseline
+        run: |
+          mkdir -p dist
+          docker run --rm -e NGINX_VERSION -v "$PWD:/work:ro" -v "$PWD/dist:/out" ubuntu:22.04 \
+            bash /work/scripts/build-nginx-linux.sh
+      - name: Check relocatable binary on supported distributions
+        run: |
+          mkdir -p dist/installed
+          tar -xzf "dist/nginx-${NGINX_VERSION}-linux-x86_64.tar.gz" -C dist/installed
+          for image in ubuntu:22.04 ubuntu:24.04 debian:12; do
+            docker run --rm -v "$PWD/dist/installed:/opt/nginx:ro" "$image" \
+              /opt/nginx/sbin/nginx -v
+          done
+      - name: Publish immutable release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release already exists; increment the packaging revision" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "dist/nginx-${NGINX_VERSION}-linux-x86_64.tar.gz" \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Nginx ${NGINX_VERSION} Linux x86_64 r${REVISION}" \
+            --notes "Managed Nginx build for Orchest." --latest=false

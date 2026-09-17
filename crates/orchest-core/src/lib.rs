@@ -10,6 +10,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    process::Command,
 };
 use uuid::Uuid;
 
@@ -162,6 +163,7 @@ pub struct Orchest {
 const BUILTIN_PHP_MANIFEST: &str = include_str!("../../../manifests/php.toml");
 const BUILTIN_MAILPIT_MANIFEST: &str = include_str!("../../../manifests/mailpit.toml");
 const BUILTIN_MEILISEARCH_MANIFEST: &str = include_str!("../../../manifests/meilisearch.toml");
+const BUILTIN_NGINX_MANIFEST: &str = include_str!("../../../manifests/nginx.toml");
 impl Orchest {
     pub fn root(&self) -> &Path {
         &self.root
@@ -238,6 +240,10 @@ impl Orchest {
         let meilisearch_path = root.join("config/packages/meilisearch.toml");
         if !meilisearch_path.exists() {
             atomic_write(&meilisearch_path, BUILTIN_MEILISEARCH_MANIFEST.as_bytes())?;
+        }
+        let nginx_path = root.join("config/packages/nginx.toml");
+        if !nginx_path.exists() {
+            atomic_write(&nginx_path, BUILTIN_NGINX_MANIFEST.as_bytes())?;
         }
         let config_path = root.join("config/orchest.toml");
         if !config_path.exists() {
@@ -854,10 +860,104 @@ impl Orchest {
     pub fn stop_meilisearch(&self) -> Result<ServiceStatus> {
         self.stop_managed_service("meilisearch", "default")
     }
+    pub fn nginx_status(&self) -> Result<ServiceStatus> {
+        Ok(self.supervisor().status("nginx")?)
+    }
+    pub fn nginx_config(&self) -> Result<String> {
+        let config = self.config()?;
+        let suffix = &config.defaults.domain_suffix;
+        if suffix.is_empty()
+            || !suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+        {
+            return Err(OrchestError::Config("invalid domain suffix".into()));
+        }
+        let mut output = format!(
+            "worker_processes 1;\npid logs/nginx.pid;\nerror_log logs/error.log;\nevents {{ worker_connections 256; }}\nhttp {{\n    access_log logs/access.log;\n    server {{ listen 127.0.0.1:{} default_server; server_name _; return 404; }}\n",
+            config.ports.nginx_http
+        );
+        let mut domains = std::collections::BTreeSet::new();
+        for project in self.projects()? {
+            if project
+                .web_server
+                .as_deref()
+                .is_some_and(|server| server != "nginx")
+            {
+                continue;
+            }
+            let domain = project
+                .domain
+                .unwrap_or_else(|| format!("{}.{}", project.name, suffix))
+                .to_ascii_lowercase();
+            if domain.is_empty()
+                || !domain
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'.')
+                || !domains.insert(domain.clone())
+            {
+                return Err(OrchestError::Config(format!(
+                    "invalid or duplicate project domain: {domain}"
+                )));
+            }
+            let root = nginx_path(&project.path)?;
+            output.push_str(&format!(
+                "    server {{\n        listen 127.0.0.1:{};\n        server_name {domain};\n        root \"{root}\";\n        index index.html index.htm;\n        location ~ \\.php$ {{ return 404; }}\n        location ~ /\\. {{ return 404; }}\n        location / {{ try_files $uri $uri/ =404; }}\n    }}\n",
+                config.ports.nginx_http
+            ));
+        }
+        output.push_str("}\n");
+        Ok(output)
+    }
+    pub fn start_nginx(&self) -> Result<ProcessState> {
+        if self.nginx_status()? == ServiceStatus::Running {
+            return Err(OrchestError::PackageInUse("nginx is running".into()));
+        }
+        let installation = self
+            .installed(Some("nginx"))?
+            .into_iter()
+            .max_by_key(|entry| numeric_version(&entry.version))
+            .ok_or_else(|| OrchestError::RuntimeNotInstalled("nginx".into()))?;
+        let prefix = self.root.join("runtime/generated/nginx");
+        fs::create_dir_all(prefix.join("logs"))?;
+        let configuration = prefix.join("nginx.conf");
+        atomic_write(&configuration, self.nginx_config()?.as_bytes())?;
+        let prefix_arg = format!("{}/", prefix.display());
+        let base_args: Vec<OsString> = vec![
+            "-p".into(),
+            prefix_arg.into(),
+            "-c".into(),
+            configuration.as_os_str().into(),
+        ];
+        let result = Command::new(&installation.executable)
+            .args(&base_args)
+            .arg("-t")
+            .output()?;
+        if !result.status.success() {
+            return Err(OrchestError::Config(format!(
+                "nginx configuration failed validation: {}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            )));
+        }
+        let mut args = base_args;
+        args.extend(["-g".into(), "daemon off; master_process off;".into()]);
+        self.start_managed_service(
+            "nginx",
+            "default",
+            &installation,
+            &[self.config()?.ports.nginx_http],
+            &args,
+            &prefix,
+        )
+    }
+    pub fn stop_nginx(&self) -> Result<ServiceStatus> {
+        self.stop_managed_service("nginx", "default")
+    }
     pub fn service_status(&self, name: &str) -> Result<ServiceStatus> {
         match name {
             "mailpit" => self.mailpit_status(),
             "meilisearch" => self.meilisearch_status(),
+            "nginx" => self.nginx_status(),
             _ => Err(OrchestError::InvalidInput(format!(
                 "unknown service: {name}"
             ))),
@@ -867,6 +967,7 @@ impl Orchest {
         match name {
             "mailpit" => self.start_mailpit(),
             "meilisearch" => self.start_meilisearch(),
+            "nginx" => self.start_nginx(),
             _ => Err(OrchestError::InvalidInput(format!(
                 "unknown service: {name}"
             ))),
@@ -876,6 +977,7 @@ impl Orchest {
         match name {
             "mailpit" => self.stop_mailpit(),
             "meilisearch" => self.stop_meilisearch(),
+            "nginx" => self.stop_nginx(),
             _ => Err(OrchestError::InvalidInput(format!(
                 "unknown service: {name}"
             ))),
@@ -1149,6 +1251,21 @@ impl Orchest {
     }
 }
 
+fn nginx_path(path: &Path) -> Result<String> {
+    let path = path.to_string_lossy();
+    if path.chars().any(|character| {
+        character == '"'
+            || character == '$'
+            || character.is_control()
+            || (cfg!(unix) && character == '\\')
+    }) {
+        return Err(OrchestError::InvalidInput(format!(
+            "project path cannot be represented in nginx configuration: {path}"
+        )));
+    }
+    Ok(path.replace('\\', "/"))
+}
+
 fn configured_ports(ports: &Ports) -> Vec<(&'static str, u16)> {
     vec![
         ("nginx_http", ports.nginx_http),
@@ -1250,6 +1367,17 @@ mod tests {
         );
     }
     #[test]
+    fn nginx_config_serves_registered_static_projects_only() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        let project = app.add_project_default("site").unwrap();
+        let config = app.nginx_config().unwrap();
+        assert!(config.contains("server_name site.test;"));
+        assert!(config.contains(&format!("root \"{}\";", project.path.display())));
+        assert!(config.contains("location ~ \\.php$ { return 404; }"));
+        assert!(config.contains("listen 127.0.0.1:80 default_server"));
+    }
+    #[test]
     fn initialization_uses_embedded_catalog_without_source_tree() {
         let root = tempfile::tempdir().unwrap();
         let app = Orchest::init(
@@ -1260,6 +1388,7 @@ mod tests {
         assert!(app.catalog().get("php").is_ok());
         assert!(app.catalog().get("mailpit").is_ok());
         assert!(app.catalog().get("meilisearch").is_ok());
+        assert!(app.catalog().get("nginx").is_ok());
     }
     #[test]
     fn init_adds_new_php_versions_without_replacing_custom_versions() {

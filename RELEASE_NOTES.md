@@ -1,3 +1,3 @@
-# Orchest v0.1.0-alpha.4
+# Orchest v0.1.0-alpha.5
 
-Fixes Nginx startup on Windows by creating and configuring its managed temporary directories before validation.
+Improves Windows PHP FastCGI startup by waiting longer, recognizing equivalent executable paths, and reporting process and log diagnostics.

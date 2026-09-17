@@ -1,4 +1,5 @@
 //! Reusable Orchest application core.
+mod certificates;
 use chrono::{DateTime, Utc};
 use orchest_packages::{Artifact, Catalog, PackageError};
 use orchest_platform::{atomic_write, ensure_layout, Platform};
@@ -68,6 +69,8 @@ pub struct Defaults {
 pub struct Ports {
     pub nginx_http: u16,
     pub nginx_https: u16,
+    #[serde(default = "default_apache_http_port")]
+    pub apache_http: u16,
     pub mysql: u16,
     pub mariadb: u16,
     pub mongodb: u16,
@@ -81,6 +84,9 @@ pub struct Ports {
 }
 fn default_mailpit_http_port() -> u16 {
     8025
+}
+fn default_apache_http_port() -> u16 {
+    8080
 }
 fn default_mailpit_smtp_port() -> u16 {
     1025
@@ -99,6 +105,7 @@ impl Default for Config {
             ports: Ports {
                 nginx_http: 80,
                 nginx_https: 443,
+                apache_http: default_apache_http_port(),
                 mysql: 3306,
                 mariadb: 3307,
                 mongodb: 27017,
@@ -172,6 +179,8 @@ const BUILTIN_PHP_MANIFEST: &str = include_str!("../../../manifests/php.toml");
 const BUILTIN_MAILPIT_MANIFEST: &str = include_str!("../../../manifests/mailpit.toml");
 const BUILTIN_MEILISEARCH_MANIFEST: &str = include_str!("../../../manifests/meilisearch.toml");
 const BUILTIN_NGINX_MANIFEST: &str = include_str!("../../../manifests/nginx.toml");
+const BUILTIN_APACHE_MANIFEST: &str = include_str!("../../../manifests/apache.toml");
+const BUILTIN_IMAGICK_MANIFEST: &str = include_str!("../../../manifests/php-imagick.toml");
 impl Orchest {
     pub fn root(&self) -> &Path {
         &self.root
@@ -253,6 +262,14 @@ impl Orchest {
         if !nginx_path.exists() {
             atomic_write(&nginx_path, BUILTIN_NGINX_MANIFEST.as_bytes())?;
         }
+        let apache_path = root.join("config/packages/apache.toml");
+        if !apache_path.exists() {
+            atomic_write(&apache_path, BUILTIN_APACHE_MANIFEST.as_bytes())?;
+        }
+        let imagick_path = root.join("config/packages/php-imagick.toml");
+        if !imagick_path.exists() {
+            atomic_write(&imagick_path, BUILTIN_IMAGICK_MANIFEST.as_bytes())?;
+        }
         let config_path = root.join("config/orchest.toml");
         if !config_path.exists() {
             atomic_write(
@@ -282,15 +299,31 @@ impl Orchest {
         toml::from_str(&fs::read_to_string(self.root.join("config/orchest.toml"))?)
             .map_err(|e| OrchestError::Config(e.to_string()))
     }
+    fn with_web_lock<T>(&self, action: impl FnOnce() -> Result<T>) -> Result<T> {
+        let path = self.root.join("runtime/state/web.lock");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.lock()?;
+        action()
+    }
     pub fn config_set(&self, key: &str, value: &str) -> Result<Config> {
-        let mut config = self.config()?;
+        self.with_web_lock(|| self.config_set_unlocked(key, value))
+    }
+    fn config_set_unlocked(&self, key: &str, value: &str) -> Result<Config> {
+        let previous = self.config()?;
+        let mut config = previous.clone();
         match key {
             "defaults.php" => {
                 config.defaults.php = Some(self.resolve_installed("php", value)?.version);
             }
-            "defaults.web_server" if ["nginx", "apache"].contains(&value) => {
-                config.defaults.web_server = value.into()
-            }
+            "defaults.web_server" if value == "nginx" => config.defaults.web_server = value.into(),
             "defaults.domain_suffix"
                 if !value.is_empty()
                     && value
@@ -312,6 +345,7 @@ impl Orchest {
                 match key {
                     "ports.nginx_http" => config.ports.nginx_http = port,
                     "ports.nginx_https" => config.ports.nginx_https = port,
+                    "ports.apache_http" => config.ports.apache_http = port,
                     "ports.mysql" => config.ports.mysql = port,
                     "ports.mariadb" => config.ports.mariadb = port,
                     "ports.mongodb" => config.ports.mongodb = port,
@@ -338,6 +372,21 @@ impl Orchest {
                 .map_err(|e| OrchestError::Config(e.to_string()))?
                 .as_bytes(),
         )?;
+        if matches!(
+            key,
+            "defaults.php" | "defaults.web_server" | "defaults.domain_suffix"
+        ) && self.nginx_status()? == ServiceStatus::Running
+        {
+            if let Err(error) = self.reload_nginx_unlocked() {
+                let _ = atomic_write(
+                    &self.root.join("config/orchest.toml"),
+                    toml::to_string_pretty(&previous)
+                        .map_err(|e| OrchestError::Config(e.to_string()))?
+                        .as_bytes(),
+                );
+                return Err(error);
+            }
+        }
         Ok(config)
     }
     pub fn catalog(&self) -> &Catalog {
@@ -388,8 +437,14 @@ impl Orchest {
             .ok_or_else(|| OrchestError::RuntimeNotInstalled(format!("{package}@{requested}")))
     }
     pub fn install(&self, package: &str, version: &str) -> Result<Installation> {
+        if package == "php-imagick" {
+            self.ensure_imagick_target(version)?;
+        }
         if let Ok(existing) = self.resolve_installed(package, version) {
             if existing.version == version && existing.executable.is_file() {
+                if package == "php" {
+                    self.maybe_install_windows_imagick(&existing)?;
+                }
                 return Ok(existing);
             }
         }
@@ -403,7 +458,17 @@ impl Orchest {
             )));
         }
         orchest_packages::install(&artifact, &destination, &self.root.join("cache/downloads"))?;
-        self.register_installation(package, version, target, artifact.url, &artifact.executable)
+        let installed = self.register_installation(
+            package,
+            version,
+            target,
+            artifact.url,
+            &artifact.executable,
+        )?;
+        if package == "php" {
+            self.maybe_install_windows_imagick(&installed)?;
+        }
+        Ok(installed)
     }
     pub fn install_from_archive(
         &self,
@@ -411,6 +476,9 @@ impl Orchest {
         version: &str,
         archive: &Path,
     ) -> Result<Installation> {
+        if package == "php-imagick" {
+            self.ensure_imagick_target(version)?;
+        }
         let target = Platform::current()?.target()?;
         let artifact = self.catalog.artifact(package, version, target)?;
         let archive = archive.canonicalize()?;
@@ -448,6 +516,34 @@ impl Orchest {
                 }
             }
             fs::create_dir_all(package_root.join("conf.d"))?;
+            if target == "windows-x86_64" {
+                configure_windows_php_extensions(&package_root)?;
+            }
+        }
+        if package == "php-imagick" {
+            let source = self.root.join("bin/php-imagick").join(version);
+            let php = self.root.join("bin/php").join(version);
+            fs::create_dir_all(php.join("ext"))?;
+            for entry in fs::read_dir(&source)? {
+                let path = entry?.path();
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"))
+                {
+                    let name = path
+                        .file_name()
+                        .ok_or_else(|| OrchestError::Config("invalid Imagick DLL".into()))?;
+                    let destination = if name == "php_imagick.dll" {
+                        php.join("ext").join(name)
+                    } else {
+                        php.join(name)
+                    };
+                    if !destination.exists() || name == "php_imagick.dll" {
+                        fs::copy(&path, destination)?;
+                    }
+                }
+            }
+            configure_windows_php_extensions(&php)?;
         }
         let installation = Installation {
             package: package.into(),
@@ -464,6 +560,35 @@ impl Orchest {
         };
         self.connect()?.execute("INSERT OR REPLACE INTO installations (package,version,platform,installed_at,source_url,executable) VALUES (?1,?2,?3,?4,?5,?6)", params![installation.package, installation.version, installation.platform, installation.installed_at.to_rfc3339(), installation.source_url, installation.executable.to_string_lossy()])?;
         Ok(installation)
+    }
+    fn ensure_imagick_target(&self, version: &str) -> Result<()> {
+        self.resolve_installed("php", version)?;
+        if self
+            .supervisor()
+            .status_instance("php-web", &php_web_instance_id(version))?
+            == ServiceStatus::Running
+        {
+            return Err(OrchestError::PackageInUse(format!(
+                "stop php@{version} before installing Imagick"
+            )));
+        }
+        Ok(())
+    }
+    fn maybe_install_windows_imagick(&self, php: &Installation) -> Result<()> {
+        if php.platform != "windows-x86_64"
+            || self
+                .catalog
+                .artifact("php-imagick", &php.version, &php.platform)
+                .is_err()
+            || self
+                .installed(Some("php-imagick"))?
+                .iter()
+                .any(|entry| entry.version == php.version)
+        {
+            return Ok(());
+        }
+        self.install("php-imagick", &php.version)?;
+        Ok(())
     }
     fn resolved_artifact(&self, package: &str, version: &str, target: &str) -> Result<Artifact> {
         let mut artifact = self.catalog.artifact(package, version, target)?.clone();
@@ -504,6 +629,9 @@ impl Orchest {
                 "php@{version} FastCGI backend is running"
             )));
         }
+        if package == "php-imagick" {
+            self.ensure_imagick_target(version)?;
+        }
         if package == "php" {
             let config = self.config()?;
             let users: Vec<_> = self
@@ -536,7 +664,23 @@ impl Orchest {
                 )?;
             }
         }
+        if package == "php"
+            && self
+                .installed(Some("php-imagick"))?
+                .iter()
+                .any(|entry| entry.version == version)
+        {
+            self.remove("php-imagick", version, false)?;
+        }
         fs::remove_dir_all(self.root.join("bin").join(package).join(version))?;
+        if package == "php-imagick" {
+            let php = self.root.join("bin/php").join(version);
+            let dll = php.join("ext/php_imagick.dll");
+            if dll.exists() {
+                fs::remove_file(dll)?;
+            }
+            configure_windows_php_extensions(&php)?;
+        }
         self.connect()?.execute(
             "DELETE FROM installations WHERE package=?1 AND version=?2",
             params![package, version],
@@ -654,12 +798,69 @@ impl Orchest {
         self.add_project(&path, name)
     }
     pub fn set_project_php(&self, name: &str, requested: &str) -> Result<Project> {
-        self.project(name)?;
+        self.with_web_lock(|| self.set_project_php_unlocked(name, requested))
+    }
+    fn set_project_php_unlocked(&self, name: &str, requested: &str) -> Result<Project> {
+        let previous = self.project(name)?;
         let installed = self.resolve_installed("php", requested)?;
         self.connect()?.execute(
             "UPDATE projects SET php_version=?1 WHERE name=?2",
             params![installed.version, name],
         )?;
+        if self.nginx_status()? == ServiceStatus::Running {
+            if let Err(error) = self.reload_nginx_unlocked() {
+                let _ = self.connect()?.execute(
+                    "UPDATE projects SET php_version=?1 WHERE name=?2",
+                    params![previous.php_version, name],
+                );
+                return Err(error);
+            }
+        }
+        self.project(name)
+    }
+    pub fn set_project_web_server(&self, name: &str, server: &str) -> Result<Project> {
+        self.with_web_lock(|| self.set_project_web_server_unlocked(name, server))
+    }
+    fn set_project_web_server_unlocked(&self, name: &str, server: &str) -> Result<Project> {
+        if !matches!(server, "nginx" | "apache") {
+            return Err(OrchestError::InvalidInput(
+                "web server must be nginx or apache".into(),
+            ));
+        }
+        let previous = self.project(name)?;
+        self.connect()?.execute(
+            "UPDATE projects SET web_server=?1 WHERE name=?2",
+            params![server, name],
+        )?;
+        if self.nginx_status()? == ServiceStatus::Running {
+            if let Err(error) = self.reload_nginx_unlocked() {
+                self.connect()?.execute(
+                    "UPDATE projects SET web_server=?1 WHERE name=?2",
+                    params![previous.web_server, name],
+                )?;
+                return Err(error);
+            }
+        }
+        self.project(name)
+    }
+    pub fn set_project_ssl(&self, name: &str, enabled: bool) -> Result<Project> {
+        self.with_web_lock(|| self.set_project_ssl_unlocked(name, enabled))
+    }
+    fn set_project_ssl_unlocked(&self, name: &str, enabled: bool) -> Result<Project> {
+        let previous = self.project(name)?;
+        self.connect()?.execute(
+            "UPDATE projects SET ssl_enabled=?1 WHERE name=?2",
+            params![enabled, name],
+        )?;
+        if self.nginx_status()? == ServiceStatus::Running {
+            if let Err(error) = self.reload_nginx_unlocked() {
+                self.connect()?.execute(
+                    "UPDATE projects SET ssl_enabled=?1 WHERE name=?2",
+                    params![previous.ssl_enabled, name],
+                )?;
+                return Err(error);
+            }
+        }
         self.project(name)
     }
     pub fn resolve_php(&self, project: Option<&Project>) -> Result<Installation> {
@@ -718,6 +919,26 @@ impl Orchest {
             String::from_utf8_lossy(&output.stdout).into_owned(),
             String::from_utf8_lossy(&output.stderr).into_owned(),
         ))
+    }
+    pub fn php_extensions(&self, version: &str) -> Result<Vec<String>> {
+        let installed = self.resolve_installed("php", version)?;
+        let root = self.root.join("bin/php").join(&installed.version);
+        let output = Command::new(&installed.executable)
+            .arg("-m")
+            .env("PHPRC", &root)
+            .env("PHP_INI_SCAN_DIR", root.join("conf.d"))
+            .output()?;
+        if !output.status.success() {
+            return Err(OrchestError::Config(format!(
+                "php -m failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('['))
+            .map(str::to_owned)
+            .collect())
     }
     fn supervisor(&self) -> Supervisor {
         Supervisor::new(
@@ -951,13 +1172,6 @@ impl Orchest {
         let default = self.config()?.defaults.php;
         let mut versions = std::collections::BTreeSet::new();
         for project in self.projects()? {
-            if project
-                .web_server
-                .as_deref()
-                .is_some_and(|server| server != "nginx")
-            {
-                continue;
-            }
             if let Some(version) = project.php_version.as_ref().or(default.as_ref()) {
                 let installation = self.resolve_installed("php", version)?;
                 versions.insert(installation.version);
@@ -1104,8 +1318,317 @@ impl Orchest {
         let installed = self.resolve_installed("php", version)?;
         self.stop_managed_service("php-web", &php_web_instance_id(&installed.version))
     }
+    fn apache_installation(&self) -> Result<Installation> {
+        self.installed(Some("apache"))?
+            .into_iter()
+            .max_by_key(|entry| numeric_version(&entry.version))
+            .ok_or_else(|| OrchestError::RuntimeNotInstalled("apache".into()))
+    }
+    fn has_apache_projects(&self) -> Result<bool> {
+        Ok(self
+            .projects()?
+            .iter()
+            .any(|project| project.web_server.as_deref() == Some("apache")))
+    }
+    pub fn apache_config(&self) -> Result<String> {
+        let installation = self.apache_installation()?;
+        let package = installation
+            .executable
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| OrchestError::Config("invalid Apache executable path".into()))?;
+        let prefix = self.root.join("runtime/generated/apache");
+        let config = self.config()?;
+        let mut output = format!(
+            "ServerRoot \"{}\"\nServerName localhost\nListen 127.0.0.1:{}\nPidFile \"logs/httpd.pid\"\nErrorLog \"logs/error.log\"\nLogLevel warn\n",
+            nginx_path(&prefix)?, config.ports.apache_http
+        );
+        for (name, module) in [
+            ("mpm_event_module", "mod_mpm_event.so"),
+            ("mpm_winnt_module", "mod_mpm_winnt.so"),
+            ("unixd_module", "mod_unixd.so"),
+            ("authz_core_module", "mod_authz_core.so"),
+            ("authz_host_module", "mod_authz_host.so"),
+            ("dir_module", "mod_dir.so"),
+            ("mime_module", "mod_mime.so"),
+            ("alias_module", "mod_alias.so"),
+            ("rewrite_module", "mod_rewrite.so"),
+            ("headers_module", "mod_headers.so"),
+            ("proxy_module", "mod_proxy.so"),
+            ("proxy_http_module", "mod_proxy_http.so"),
+            ("proxy_fcgi_module", "mod_proxy_fcgi.so"),
+        ] {
+            let path = package.join("modules").join(module);
+            if path.is_file() {
+                output.push_str(&format!("LoadModule {name} \"{}\"\n", nginx_path(&path)?));
+            }
+        }
+        let mime_types = package.join("conf/mime.types");
+        if mime_types.is_file() {
+            output.push_str(&format!("TypesConfig \"{}\"\n", nginx_path(&mime_types)?));
+        }
+        output.push_str("<Directory />\n    Require all denied\n</Directory>\n");
+        let mut domains = std::collections::BTreeSet::new();
+        for project in self.projects()? {
+            if project.web_server.as_deref() != Some("apache") {
+                continue;
+            }
+            let domain = project
+                .domain
+                .unwrap_or_else(|| format!("{}.{}", project.name, config.defaults.domain_suffix))
+                .to_ascii_lowercase();
+            if domain.is_empty()
+                || !domain
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+                || !domains.insert(domain.clone())
+            {
+                return Err(OrchestError::Config(format!(
+                    "invalid or duplicate project domain: {domain}"
+                )));
+            }
+            let root = nginx_path(&project.path)?;
+            output.push_str(&format!("<VirtualHost 127.0.0.1:{}>\n    ServerName {domain}\n    DocumentRoot \"{root}\"\n    <Directory \"{root}\">\n        Require all granted\n        AllowOverride All\n        Options FollowSymLinks\n        DirectoryIndex index.php index.html index.htm\n    </Directory>\n", config.ports.apache_http));
+            if let Some(version) = project
+                .php_version
+                .as_deref()
+                .or(config.defaults.php.as_deref())
+            {
+                let php = self.resolve_installed("php", version)?;
+                let port = self.php_web_port(&php.version)?;
+                output.push_str(&format!("    ProxyFCGIBackendType GENERIC\n    <FilesMatch \"\\.php$\">\n        SetHandler \"proxy:fcgi://127.0.0.1:{port}\"\n    </FilesMatch>\n"));
+            }
+            output.push_str("</VirtualHost>\n");
+        }
+        Ok(output)
+    }
+    pub fn apache_status(&self) -> Result<ServiceStatus> {
+        Ok(self.supervisor().status("apache")?)
+    }
+    pub fn start_apache(&self) -> Result<ProcessState> {
+        let installation = self.apache_installation()?;
+        let prefix = self.root.join("runtime/generated/apache");
+        fs::create_dir_all(prefix.join("logs"))?;
+        let configuration = prefix.join("httpd.conf");
+        atomic_write(&configuration, self.apache_config()?.as_bytes())?;
+        let args: Vec<OsString> = vec![
+            "-d".into(),
+            prefix.as_os_str().into(),
+            "-f".into(),
+            configuration.as_os_str().into(),
+        ];
+        let check = Command::new(&installation.executable)
+            .args(&args)
+            .arg("-t")
+            .output()?;
+        if !check.status.success() {
+            return Err(OrchestError::Config(format!(
+                "Apache configuration failed validation: {}",
+                String::from_utf8_lossy(&check.stderr).trim()
+            )));
+        }
+        for version in self.nginx_php_versions()? {
+            if self.php_web_status(&version)? != ServiceStatus::Running {
+                self.start_php_web(&version)?;
+            }
+        }
+        let mut run_args = args;
+        if !cfg!(windows) {
+            run_args.extend(["-D".into(), "FOREGROUND".into()]);
+        }
+        self.start_managed_service(
+            "apache",
+            "default",
+            &installation,
+            &[self.config()?.ports.apache_http],
+            &run_args,
+            &prefix,
+        )
+    }
+    pub fn stop_apache(&self) -> Result<ServiceStatus> {
+        if self.apache_status()? == ServiceStatus::Running {
+            let installation = self.apache_installation()?;
+            let prefix = self.root.join("runtime/generated/apache");
+            let _ = Command::new(&installation.executable)
+                .args([
+                    "-d",
+                    &prefix.to_string_lossy(),
+                    "-f",
+                    &prefix.join("httpd.conf").to_string_lossy(),
+                    "-k",
+                    "graceful-stop",
+                ])
+                .output();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline && self.apache_status()? == ServiceStatus::Running {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        self.stop_managed_service("apache", "default")
+    }
+    pub fn reload_apache(&self) -> Result<()> {
+        if self.apache_status()? != ServiceStatus::Running {
+            return Err(OrchestError::Config("Apache is not running".into()));
+        }
+        let installation = self.apache_installation()?;
+        let prefix = self.root.join("runtime/generated/apache");
+        let configuration = prefix.join("httpd.conf");
+        let previous = fs::read(&configuration)?;
+        let proposed = self.apache_config()?;
+        let staged = prefix.join("httpd.next.conf");
+        atomic_write(&staged, proposed.as_bytes())?;
+        let check = Command::new(&installation.executable)
+            .args([
+                "-d",
+                &prefix.to_string_lossy(),
+                "-f",
+                &staged.to_string_lossy(),
+                "-t",
+            ])
+            .output()?;
+        if !check.status.success() {
+            return Err(OrchestError::Config(format!(
+                "Apache configuration failed validation: {}",
+                String::from_utf8_lossy(&check.stderr).trim()
+            )));
+        }
+        atomic_write(&configuration, proposed.as_bytes())?;
+        let signal = Command::new(&installation.executable)
+            .args([
+                "-d",
+                &prefix.to_string_lossy(),
+                "-f",
+                &configuration.to_string_lossy(),
+                "-k",
+                "graceful",
+            ])
+            .output()?;
+        if !signal.status.success() || self.apache_status()? != ServiceStatus::Running {
+            let _ = atomic_write(&configuration, &previous);
+            let _ = Command::new(&installation.executable)
+                .args([
+                    "-d",
+                    &prefix.to_string_lossy(),
+                    "-f",
+                    &configuration.to_string_lossy(),
+                    "-k",
+                    "graceful",
+                ])
+                .output();
+            return Err(OrchestError::Config(format!(
+                "Apache reload failed: {}",
+                String::from_utf8_lossy(&signal.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
     pub fn nginx_status(&self) -> Result<ServiceStatus> {
         Ok(self.supervisor().status("nginx")?)
+    }
+    pub fn reload_nginx(&self) -> Result<()> {
+        self.with_web_lock(|| self.reload_nginx_unlocked())
+    }
+    fn reload_nginx_unlocked(&self) -> Result<()> {
+        if self.nginx_status()? != ServiceStatus::Running {
+            return Err(OrchestError::Config("nginx is not running".into()));
+        }
+        let installation = self
+            .installed(Some("nginx"))?
+            .into_iter()
+            .max_by_key(|entry| numeric_version(&entry.version))
+            .ok_or_else(|| OrchestError::RuntimeNotInstalled("nginx".into()))?;
+        let prefix = self.root.join("runtime/generated/nginx");
+        let configuration = prefix.join("nginx.conf");
+        let previous = fs::read(&configuration)?;
+        let mut started_php = Vec::new();
+        let mut started_apache = false;
+        let required_php = self.nginx_php_versions()?;
+        let result = (|| -> Result<()> {
+            self.ensure_site_certificates()?;
+            for version in &required_php {
+                if self.php_web_status(version)? != ServiceStatus::Running {
+                    self.start_php_web(version)?;
+                    started_php.push(version.clone());
+                }
+            }
+            if self.has_apache_projects()? {
+                if self.apache_status()? == ServiceStatus::Running {
+                    self.reload_apache()?;
+                } else {
+                    self.start_apache()?;
+                    started_apache = true;
+                }
+            }
+            let proposed = self.nginx_config()?;
+            let staged = prefix.join("nginx.next.conf");
+            atomic_write(&staged, proposed.as_bytes())?;
+            let args: Vec<OsString> = vec![
+                "-p".into(),
+                format!("{}/", prefix.display()).into(),
+                "-c".into(),
+                staged.as_os_str().into(),
+            ];
+            let check = Command::new(&installation.executable)
+                .args(&args)
+                .arg("-t")
+                .output()?;
+            if !check.status.success() {
+                return Err(OrchestError::Config(format!(
+                    "nginx configuration failed validation: {}",
+                    String::from_utf8_lossy(&check.stderr).trim()
+                )));
+            }
+            atomic_write(&configuration, proposed.as_bytes())?;
+            let signal = Command::new(&installation.executable)
+                .args(["-p", &format!("{}/", prefix.display()), "-c"])
+                .arg(&configuration)
+                .args(["-s", "reload"])
+                .output()?;
+            if !signal.status.success() {
+                return Err(OrchestError::Config(format!(
+                    "nginx reload failed: {}",
+                    String::from_utf8_lossy(&signal.stderr).trim()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            if self.nginx_status()? != ServiceStatus::Running {
+                return Err(OrchestError::Config("nginx exited during reload".into()));
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = atomic_write(&configuration, &previous);
+            let _ = Command::new(&installation.executable)
+                .args(["-p", &format!("{}/", prefix.display()), "-c"])
+                .arg(&configuration)
+                .args(["-s", "reload"])
+                .output();
+            for version in started_php {
+                let _ = self.stop_php_web(&version);
+            }
+            if started_apache {
+                let _ = self.stop_apache();
+            }
+        } else {
+            if !self.has_apache_projects()? && self.apache_status()? == ServiceStatus::Running {
+                let _ = self.stop_apache();
+            }
+            for instance in self.supervisor().instances("php-web")? {
+                if instance.status == ServiceStatus::Running {
+                    if let Some(version) = self
+                        .installed(Some("php"))?
+                        .into_iter()
+                        .find(|php| php_web_instance_id(&php.version) == instance.instance_id)
+                        .map(|php| php.version)
+                    {
+                        if !required_php.contains(&version) {
+                            let _ = self.stop_php_web(&version);
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
     pub fn nginx_config(&self) -> Result<String> {
         let config = self.config()?;
@@ -1122,15 +1645,12 @@ impl Orchest {
             "worker_processes 1;\npid logs/nginx.pid;\nerror_log logs/error.log;\nevents {{ worker_connections 256; }}\nhttp {{\n    access_log logs/access.log;\n    client_body_temp_path temp/client_body_temp;\n    proxy_temp_path temp/proxy_temp;\n    fastcgi_temp_path temp/fastcgi_temp;\n    uwsgi_temp_path temp/uwsgi_temp;\n    scgi_temp_path temp/scgi_temp;\n    server {{ listen 127.0.0.1:{} default_server; server_name _; return 404; }}\n",
             config.ports.nginx_http
         );
+        let fallback_cert = nginx_path(&self.root.join("certificates/sites/localhost/cert.pem"))?;
+        let fallback_key = nginx_path(&self.root.join("certificates/sites/localhost/key.pem"))?;
+        output.push_str(&format!("    server {{ listen 127.0.0.1:{} ssl default_server; server_name _; ssl_certificate \"{fallback_cert}\"; ssl_certificate_key \"{fallback_key}\"; return 404; }}\n", config.ports.nginx_https));
         let mut domains = std::collections::BTreeSet::new();
         for project in self.projects()? {
-            if project
-                .web_server
-                .as_deref()
-                .is_some_and(|server| server != "nginx")
-            {
-                continue;
-            }
+            let web_server = project.web_server.as_deref().unwrap_or("nginx");
             let domain = project
                 .domain
                 .unwrap_or_else(|| format!("{}.{}", project.name, suffix))
@@ -1146,23 +1666,55 @@ impl Orchest {
                 )));
             }
             let root = nginx_path(&project.path)?;
-            output.push_str(&format!(
-                "    server {{\n        listen 127.0.0.1:{};\n        server_name {domain};\n        root \"{root}\";\n        location ~ /\\. {{ return 404; }}\n",
-                config.ports.nginx_http
-            ));
-            if let Some(version) = project.php_version.as_deref().or(default_php) {
-                let php = self.resolve_installed("php", version)?;
-                let port = self.php_web_port(&php.version)?;
-                output.push_str(&format!(
-                    "        index index.php index.html index.htm;\n        location / {{ try_files $uri $uri/ /index.php?$query_string; }}\n        location ~* \\.php$ {{\n            try_files $uri =404;\n            fastcgi_pass 127.0.0.1:{port};\n            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n            fastcgi_param SCRIPT_NAME $fastcgi_script_name;\n            fastcgi_param DOCUMENT_ROOT $document_root;\n            fastcgi_param QUERY_STRING $query_string;\n            fastcgi_param REQUEST_METHOD $request_method;\n            fastcgi_param CONTENT_TYPE $content_type;\n            fastcgi_param CONTENT_LENGTH $content_length;\n            fastcgi_param REQUEST_URI $request_uri;\n            fastcgi_param SERVER_PROTOCOL $server_protocol;\n            fastcgi_param SERVER_NAME $server_name;\n            fastcgi_param SERVER_PORT $server_port;\n            fastcgi_param HTTPS off;\n            fastcgi_param REDIRECT_STATUS 200;\n            fastcgi_param HTTP_AUTHORIZATION $http_authorization;\n        }}\n"
+            let mut site = format!("        server_name {domain};\n");
+            if web_server == "apache" {
+                site.push_str(&format!(
+                    "        location / {{\n            proxy_pass http://127.0.0.1:{};\n            proxy_set_header Host $host;\n            proxy_set_header X-Real-IP $remote_addr;\n            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n            proxy_set_header X-Forwarded-Proto $scheme;\n        }}\n",
+                    config.ports.apache_http
                 ));
             } else {
-                output.push_str("        index index.html index.htm;\n        location / { try_files $uri $uri/ =404; }\n");
-            }
-            output.push_str(
+                site.push_str(&format!(
+                    "        root \"{root}\";\n        location ~ /\\. {{ return 404; }}\n"
+                ));
+                if let Some(version) = project.php_version.as_deref().or(default_php) {
+                    let php = self.resolve_installed("php", version)?;
+                    let port = self.php_web_port(&php.version)?;
+                    site.push_str(&format!(
+                    "        index index.php index.html index.htm;\n        location / {{ try_files $uri $uri/ /index.php?$query_string; }}\n        location ~* \\.php$ {{\n            try_files $uri =404;\n            fastcgi_pass 127.0.0.1:{port};\n            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;\n            fastcgi_param SCRIPT_NAME $fastcgi_script_name;\n            fastcgi_param DOCUMENT_ROOT $document_root;\n            fastcgi_param QUERY_STRING $query_string;\n            fastcgi_param REQUEST_METHOD $request_method;\n            fastcgi_param CONTENT_TYPE $content_type;\n            fastcgi_param CONTENT_LENGTH $content_length;\n            fastcgi_param REQUEST_URI $request_uri;\n            fastcgi_param SERVER_PROTOCOL $server_protocol;\n            fastcgi_param SERVER_NAME $server_name;\n            fastcgi_param SERVER_PORT $server_port;\n            fastcgi_param HTTPS off;\n            fastcgi_param REDIRECT_STATUS 200;\n            fastcgi_param HTTP_AUTHORIZATION $http_authorization;\n        }}\n"
+                ));
+                } else {
+                    site.push_str("        index index.html index.htm;\n        location / { try_files $uri $uri/ =404; }\n");
+                }
+                site.push_str(
                 "        location ~* \\.(?:phtml|phar|php[0-9]?|inc)(?:$|[./]) { return 404; }\n",
             );
-            output.push_str("    }\n");
+            }
+            output.push_str(&format!(
+                "    server {{\n        listen 127.0.0.1:{};\n{site}    }}\n",
+                config.ports.nginx_http
+            ));
+            if project.ssl_enabled {
+                let cert = nginx_path(
+                    &self
+                        .root
+                        .join("certificates/sites")
+                        .join(&domain)
+                        .join("cert.pem"),
+                )?;
+                let key = nginx_path(
+                    &self
+                        .root
+                        .join("certificates/sites")
+                        .join(&domain)
+                        .join("key.pem"),
+                )?;
+                let https_site =
+                    site.replace("fastcgi_param HTTPS off;", "fastcgi_param HTTPS on;");
+                output.push_str(&format!(
+                    "    server {{\n        listen 127.0.0.1:{} ssl;\n        ssl_certificate \"{cert}\";\n        ssl_certificate_key \"{key}\";\n{https_site}    }}\n",
+                    config.ports.nginx_https
+                ));
+            }
         }
         output.push_str("}\n");
         Ok(output)
@@ -1178,6 +1730,7 @@ impl Orchest {
             .ok_or_else(|| OrchestError::RuntimeNotInstalled("nginx".into()))?;
         let prefix = self.root.join("runtime/generated/nginx");
         prepare_nginx_prefix(&prefix)?;
+        self.ensure_site_certificates()?;
         let configuration = prefix.join("nginx.conf");
         atomic_write(&configuration, self.nginx_config()?.as_bytes())?;
         let prefix_arg = format!("{}/", prefix.display());
@@ -1209,25 +1762,68 @@ impl Orchest {
                 started_php.push(version);
             }
         }
+        let mut started_apache = false;
+        if self.has_apache_projects()? && self.apache_status()? != ServiceStatus::Running {
+            if let Err(error) = self.start_apache() {
+                for started in started_php {
+                    let _ = self.stop_php_web(&started);
+                }
+                return Err(error);
+            }
+            started_apache = true;
+        }
         let mut args = base_args;
-        args.extend(["-g".into(), "daemon off; master_process off;".into()]);
+        args.extend(["-g".into(), "daemon off;".into()]);
         let result = self.start_managed_service(
             "nginx",
             "default",
             &installation,
-            &[self.config()?.ports.nginx_http],
+            &[
+                self.config()?.ports.nginx_http,
+                self.config()?.ports.nginx_https,
+            ],
             &args,
             &prefix,
         );
         if result.is_err() {
+            if started_apache {
+                let _ = self.stop_apache();
+            }
             for started in started_php {
                 let _ = self.stop_php_web(&started);
             }
         }
-        result
+        let process = result?;
+        if let Err(error) = self.start_ssl_renewer() {
+            let _ = self.stop_nginx();
+            return Err(error);
+        }
+        Ok(process)
     }
     pub fn stop_nginx(&self) -> Result<ServiceStatus> {
+        let _ = self.supervisor().stop("ssl-renewer");
+        if self.nginx_status()? == ServiceStatus::Running {
+            if let Some(installation) = self
+                .installed(Some("nginx"))?
+                .into_iter()
+                .max_by_key(|entry| numeric_version(&entry.version))
+            {
+                let prefix = self.root.join("runtime/generated/nginx");
+                let _ = Command::new(&installation.executable)
+                    .args(["-p", &format!("{}/", prefix.display()), "-c"])
+                    .arg(prefix.join("nginx.conf"))
+                    .args(["-s", "quit"])
+                    .output();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < deadline && self.nginx_status()? == ServiceStatus::Running {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
         let status = self.stop_managed_service("nginx", "default")?;
+        if self.apache_status()? == ServiceStatus::Running {
+            self.stop_apache()?;
+        }
         for instance in self.supervisor().instances("php-web")? {
             if instance.status == ServiceStatus::Running {
                 self.stop_managed_service("php-web", &instance.instance_id)?;
@@ -1235,11 +1831,66 @@ impl Orchest {
         }
         Ok(status)
     }
+    fn ensure_site_certificates(&self) -> Result<bool> {
+        let mut changed = certificates::ensure_site_certificate(&self.root, "localhost")?;
+        let suffix = self.config()?.defaults.domain_suffix;
+        for project in self.projects()? {
+            if project.ssl_enabled {
+                let domain = project
+                    .domain
+                    .unwrap_or_else(|| format!("{}.{}", project.name, suffix));
+                changed |= certificates::ensure_site_certificate(
+                    &self.root,
+                    &domain.to_ascii_lowercase(),
+                )?;
+            }
+        }
+        Ok(changed)
+    }
+    pub fn renew_ssl(&self) -> Result<bool> {
+        self.with_web_lock(|| self.renew_ssl_unlocked())
+    }
+    fn renew_ssl_unlocked(&self) -> Result<bool> {
+        let changed = self.ensure_site_certificates()?;
+        if changed && self.nginx_status()? == ServiceStatus::Running {
+            self.reload_nginx_unlocked()?;
+        }
+        Ok(changed)
+    }
+    fn start_ssl_renewer(&self) -> Result<()> {
+        if self.supervisor().status("ssl-renewer")? == ServiceStatus::Running {
+            return Ok(());
+        }
+        let mut binary = std::env::current_exe()?;
+        let cli_name = if cfg!(windows) {
+            "orchest.exe"
+        } else {
+            "orchest"
+        };
+        if binary.file_name().is_none_or(|name| name != cli_name) {
+            binary.set_file_name(cli_name);
+        }
+        if !binary.is_file() {
+            return Err(OrchestError::Config(format!(
+                "SSL renewal requires {} next to the running Orchest binary",
+                binary.display()
+            )));
+        }
+        let args: Vec<OsString> = vec![
+            "--root".into(),
+            self.root.as_os_str().into(),
+            "__ssl-renew-loop".into(),
+        ];
+        self.supervisor()
+            .start("ssl-renewer", &binary, &args, Some(&self.root))?;
+        Ok(())
+    }
     pub fn service_status(&self, name: &str) -> Result<ServiceStatus> {
         if let Some(version) = name.strip_prefix("php@") {
             return self.php_web_status(version);
         }
         match name {
+            "apache" => self.apache_status(),
             "mailpit" => self.mailpit_status(),
             "meilisearch" => self.meilisearch_status(),
             "nginx" => self.nginx_status(),
@@ -1253,6 +1904,7 @@ impl Orchest {
             return self.start_php_web(version);
         }
         match name {
+            "apache" => self.start_apache(),
             "mailpit" => self.start_mailpit(),
             "meilisearch" => self.start_meilisearch(),
             "nginx" => self.start_nginx(),
@@ -1266,6 +1918,7 @@ impl Orchest {
             return self.stop_php_web(version);
         }
         match name {
+            "apache" => self.stop_apache(),
             "mailpit" => self.stop_mailpit(),
             "meilisearch" => self.stop_meilisearch(),
             "nginx" => self.stop_nginx(),
@@ -1546,6 +2199,40 @@ fn nginx_path(path: &Path) -> Result<String> {
     let path = path.to_string_lossy();
     nginx_path_text(&path, cfg!(windows))
 }
+fn configure_windows_php_extensions(package_root: &Path) -> Result<()> {
+    let extension_dir = package_root.join("ext");
+    if !extension_dir.is_dir() {
+        return Ok(());
+    }
+    let mut config = format!("extension_dir = \"{}\"\n", nginx_path(&extension_dir)?);
+    for name in [
+        "bz2",
+        "curl",
+        "fileinfo",
+        "gd",
+        "intl",
+        "mbstring",
+        "exif",
+        "mysqli",
+        "openssl",
+        "pdo_mysql",
+        "pdo_pgsql",
+        "pdo_sqlite",
+        "pgsql",
+        "sqlite3",
+        "zip",
+        "imagick",
+    ] {
+        if extension_dir.join(format!("php_{name}.dll")).is_file() {
+            config.push_str(&format!("extension={name}\n"));
+        }
+    }
+    atomic_write(
+        &package_root.join("conf.d/00-orchest-extensions.ini"),
+        config.as_bytes(),
+    )?;
+    Ok(())
+}
 
 fn nginx_path_text(path: &str, windows: bool) -> Result<String> {
     if path.chars().any(|character| {
@@ -1623,6 +2310,7 @@ fn configured_ports(ports: &Ports) -> Vec<(&'static str, u16)> {
     vec![
         ("nginx_http", ports.nginx_http),
         ("nginx_https", ports.nginx_https),
+        ("apache_http", ports.apache_http),
         ("mysql", ports.mysql),
         ("mariadb", ports.mariadb),
         ("mongodb", ports.mongodb),
@@ -1741,6 +2429,80 @@ mod tests {
         ] {
             assert!(config.contains(&format!("{directive} temp/{directory};")));
         }
+    }
+    #[test]
+    fn apache_project_is_proxied_and_ssl_uses_local_certificates() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        app.add_project_default("legacy").unwrap();
+        app.set_project_web_server("legacy", "apache").unwrap();
+        app.set_project_ssl("legacy", true).unwrap();
+        let config = app.nginx_config().unwrap();
+        assert!(config.contains("proxy_pass http://127.0.0.1:8080;"));
+        assert!(config.contains("proxy_set_header Host $host;"));
+        assert!(config.contains("proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"));
+        assert!(config.contains("listen 127.0.0.1:443 ssl;"));
+        assert!(config.contains("certificates/sites/legacy.test/cert.pem"));
+        assert!(!config.contains("fastcgi_pass"));
+        app.ensure_site_certificates().unwrap();
+        assert!(root.path().join("certificates/ca/cert.pem").is_file());
+        assert!(root
+            .path()
+            .join("certificates/sites/legacy.test/key.pem")
+            .is_file());
+    }
+    #[test]
+    fn apache_requires_an_explicit_project_selection_even_with_legacy_global_default() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        app.add_project_default("default").unwrap();
+        assert!(!app.has_apache_projects().unwrap());
+        let mut config = app.config().unwrap();
+        config.defaults.web_server = "apache".into();
+        atomic_write(
+            &root.path().join("config/orchest.toml"),
+            toml::to_string_pretty(&config).unwrap().as_bytes(),
+        )
+        .unwrap();
+        assert!(!app.has_apache_projects().unwrap());
+        let nginx = app.nginx_config().unwrap();
+        assert!(nginx.contains("server_name default.test;"));
+        assert!(!nginx.contains("proxy_pass http://127.0.0.1:8080;"));
+        assert!(app.config_set("defaults.web_server", "apache").is_err());
+        app.set_project_web_server("default", "apache").unwrap();
+        assert!(app.has_apache_projects().unwrap());
+        assert!(app
+            .nginx_config()
+            .unwrap()
+            .contains("proxy_pass http://127.0.0.1:8080;"));
+    }
+    #[test]
+    fn apache_config_uses_project_php_backend() {
+        let root = tempfile::tempdir().unwrap();
+        let app = Orchest::init(root.path().to_path_buf(), &root.path().join("missing")).unwrap();
+        let apache = root.path().join("bin/apache/2.4.68/bin/httpd");
+        fs::create_dir_all(apache.parent().unwrap()).unwrap();
+        fs::write(&apache, b"fixture").unwrap();
+        app.register_installation(
+            "apache",
+            "2.4.68",
+            "linux-x86_64",
+            "fixture".into(),
+            "bin/httpd",
+        )
+        .unwrap();
+        let php = root.path().join("bin/php/8.4.15/bin/php");
+        fs::create_dir_all(php.parent().unwrap()).unwrap();
+        fs::write(&php, b"fixture").unwrap();
+        app.register_installation("php", "8.4.15", "linux-x86_64", "fixture".into(), "bin/php")
+            .unwrap();
+        app.add_project_default("legacy").unwrap();
+        app.set_project_web_server("legacy", "apache").unwrap();
+        app.set_project_php("legacy", "8.4.15").unwrap();
+        let config = app.apache_config().unwrap();
+        assert!(config.contains("Listen 127.0.0.1:8080"));
+        assert!(config.contains("ServerName legacy.test"));
+        assert!(config.contains("SetHandler \"proxy:fcgi://127.0.0.1:19000\""));
     }
     #[test]
     fn nginx_path_converts_windows_verbatim_drive_for_php_cgi() {

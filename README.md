@@ -1,6 +1,6 @@
 # Orchest
 
-Orchest manages local development runtimes inside a configurable root. The current implementation is the first CLI milestone: PHP package installation, multiple installed versions, project-specific PHP selection, managed execution, JSON output, and diagnostics.
+Orchest manages local development runtimes inside a configurable root. The current CLI and API cover PHP, Nginx, Apache, local HTTPS, Mailpit, Meilisearch, package installation, projects, and diagnostics.
 
 ## Build
 
@@ -48,14 +48,22 @@ orchest service start meilisearch
 orchest service status meilisearch
 orchest service stop meilisearch
 orchest package install nginx@1.30.5
+orchest package install apache@2.4.68
 orchest php install 8.4.15
-orchest config set ports.nginx_http 8080
 orchest project add --name demo
 orchest project php demo 8.4.15
+orchest project ssl demo on
 orchest service config nginx
 orchest service start nginx
+orchest service reload nginx
 orchest service status nginx
 orchest service status php@8.4.15
+orchest php extensions 8.4.15
+orchest project add --name legacy
+orchest project web-server legacy apache
+orchest project ssl legacy on
+orchest service config apache
+orchest ssl renew
 orchest service stop nginx
 orchest port list
 orchest port check 3306
@@ -66,7 +74,9 @@ orchest doctor --json
 
 `orchest doctor` checks that the root is writable, reads configuration, runs SQLite `quick_check`, validates installed executables and project paths, reports unavailable configured ports, and flags stale service instance records. It does not remove those records or stop processes. A SQLite port registry records the service and instance that claimed each port. `port list` and `port check` expose `owner` and `state` (`available`, `managed`, `reserved`, `stale_claim`, or `unavailable`). External port owners are reported as unavailable without claiming a PID.
 
-Nginx serves registered project directories at `<project>.test` on `127.0.0.1:ports.nginx_http`. Add a hosts-file entry for each project domain or send a matching `Host` header. `orchest service config nginx` previews the generated configuration; the API exposes `GET /api/v1/services/nginx/config` with bearer authentication. Starting Nginx validates its configuration with `nginx -t`, starts one FastCGI backend per PHP version used by its projects, and reserves the HTTP port. Linux uses the managed `php-fpm` binary; Windows uses `php-cgi.exe` from the official PHP ZIP. Each backend binds only to loopback on a persistent port in `19000..19999`. `orchest service start/status/stop php@VERSION` and the corresponding `/api/v1/services/php@VERSION` routes manage a backend directly. Stopping Nginx also stops the managed PHP backends. Stop and start Nginx after changing projects, PHP assignments, or its port. Projects without an assigned or default PHP version serve static files and reject PHP-like source files. On Linux, port 80 requires privileges; a user port such as 8080 works without them. The Windows ZIP comes from nginx.org. The Linux archive is available in [Orchest's Nginx 1.30.5 release](https://github.com/danidoble/orchest/releases/tag/nginx-1.30.5-linux-x86_64-r1), so `orchest package install nginx@1.30.5` downloads it directly. `--archive` remains available for external or offline archives.
+Nginx listens on loopback ports 80 and 443 by default and serves registered projects at `<project>.test`. Add a hosts-file entry for each domain or send a matching `Host` header. HTTPS uses a local Orchest CA under `<root>/certificates/ca`; certificate trust in the operating system is optional and remains a manual choice. Certificates are renewed before expiry while Nginx is running, and `orchest ssl renew` checks them immediately. `orchest service config nginx` previews the configuration; the API exposes `GET /api/v1/services/nginx/config`. Starting Nginx validates with `nginx -t`, starts FastCGI backends per PHP version, and reserves both entry ports. Linux uses managed `php-fpm`; Windows uses `php-cgi.exe`. Each FastCGI backend binds only to loopback on a persistent port in `19000..19999`. PHP changes through CLI/API validate and reload Nginx automatically. Projects without PHP serve static files. Nginx with FastCGI is the default for every PHP project. Only a project explicitly configured with `orchest project web-server NAME apache` starts Apache and routes that site's requests through Nginx to Apache on `127.0.0.1:8080`, preserving Host and forwarding the client IP. On Linux, ports 80/443 require suitable privileges; configurable higher ports work without them.
+
+The previous Nginx Linux release (`r1`) lacks SSL support. The manifest points to an SSL-enabled `r2` archive. The Apache Linux manifest points to its first `r1` archive, and PHP Linux manifests point to extension-enabled `r2` archives. These Release assets must be published before online installation; meanwhile, use `--archive` with locally built archives for isolated testing. The Windows Nginx ZIP is official; the Apache ZIP is from [Apache Lounge](https://www.apachelounge.com/download/), which the [Apache HTTP Server documentation](https://httpd.apache.org/docs/2.4/platform/windows.html) lists as a Windows binary provider. See [PHP extensions](docs/php-extensions.md) for module coverage and Windows Imagick packages.
 
 For an offline or local release test, use `orchest php install 8.4.15 --archive /path/to/php-8.4.15-linux-x86_64.tar.gz`. The same archive validation and staged installation are used. Put global flags before `exec` when using `--json`, for example `orchest --json exec php -v`.
 
@@ -83,7 +93,7 @@ The reusable core owns project, config, installation, and port claim state. The 
 
 ## Local API
 
-Run `ORCHEST_ROOT=/path/to/root cargo run -p orchest-api` after `orchest init`. It listens only on `127.0.0.1`, port `8765` by default (`ORCHEST_API_PORT` overrides the port). The bearer token is created at `runtime/state/api-token` under the Orchest root. Supply it in `Authorization: Bearer <token>` for every request. Current `/api/v1` endpoints cover status, package catalog and installation, projects, PHP assignment, ports, doctor, and service status/start/stop for Mailpit, Meilisearch, Nginx, and `php@VERSION` (`/api/v1/services/{name}`, `/start`, `/stop`). Mailpit listens on loopback ports `8025` (HTTP) and `1025` (SMTP) by default, configurable through `ports.mailpit_http` and `ports.mailpit_smtp`. Its database lives under `<root>/data/mailpit`. Meilisearch listens on loopback port `7700` by default, configurable through `ports.meilisearch_http`, and stores its data under `<root>/data/meilisearch`. Port checks distinguish a registered managed instance from an unavailable external port, but do not identify the external process PID.
+Run `ORCHEST_ROOT=/path/to/root cargo run -p orchest-api` after `orchest init`. It listens only on `127.0.0.1`, port `8765` by default (`ORCHEST_API_PORT` overrides the port). The bearer token is created at `runtime/state/api-token` under the Orchest root. Supply it in `Authorization: Bearer <token>` for every request. Current `/api/v1` endpoints cover config read/update, package catalog and installation, projects and their PHP/web server/SSL settings, loaded PHP extensions, ports, doctor, SSL renewal, and service status/start/stop/configuration. Mailpit listens on loopback ports `8025` (HTTP) and `1025` (SMTP) by default. Meilisearch listens on loopback port `7700` by default. Port checks distinguish a registered managed instance from an unavailable external port, but do not identify the external process PID.
 
 ## PHP release artifacts
 
@@ -97,4 +107,4 @@ Direct HTTPS installation and CLI execution of all four Linux versions passed in
 
 ## Current limits
 
-This is an early CLI and API slice. Meilisearch installation and service execution passed a Linux smoke test against `/health`; its Windows service flow still needs verification. Nginx with PHP 8.4.15 and 8.5.10 passed a two-project HTTP smoke test in an isolated Ubuntu 26.04 container. The official Windows PHP ZIP was checked for `php-cgi.exe`, but the Windows web flow still needs VM validation. Apache, Node/Corepack, databases, certificates, schedulers, queues, and desktop UI remain to be implemented. The API currently runs synchronous core operations directly for its short handlers; long downloads use a blocking worker.
+This is an early CLI and API slice. The Nginx → Apache/PHP FastCGI path, HTTPS, PHP switch/reload, and automatic certificate renewal passed an isolated Debian 12 smoke test. Windows Apache/HTTPS and the newly enabled PHP extensions still need VM testing. Node/Corepack, databases, schedulers, queues, and desktop UI remain pending. The API runs downloads and web reconfiguration in blocking workers; short handlers still call the core directly.

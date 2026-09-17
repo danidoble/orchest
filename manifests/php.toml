@@ -12,7 +12,7 @@ archive = "zip"
 executable = "php.exe"
 
 [versions.linux-x86_64]
-url = "https://github.com/danidoble/orchest/releases/download/php-8.2.33-linux-x86_64-r1/php-8.2.33-linux-x86_64.tar.gz"
+url = "https://github.com/danidoble/orchest/releases/download/php-8.2.33-linux-x86_64-r2/php-8.2.33-linux-x86_64.tar.gz"
 archive = "tar.gz"
 executable = "bin/php"
 
@@ -25,7 +25,7 @@ archive = "zip"
 executable = "php.exe"
 
 [versions.linux-x86_64]
-url = "https://github.com/danidoble/orchest/releases/download/php-8.3.33-linux-x86_64-r1/php-8.3.33-linux-x86_64.tar.gz"
+url = "https://github.com/danidoble/orchest/releases/download/php-8.3.33-linux-x86_64-r2/php-8.3.33-linux-x86_64.tar.gz"
 archive = "tar.gz"
 executable = "bin/php"
 
@@ -38,7 +38,7 @@ archive = "zip"
 executable = "php.exe"
 
 [versions.linux-x86_64]
-url = "https://github.com/danidoble/orchest/releases/download/php-8.4.15-linux-x86_64-r1/php-8.4.15-linux-x86_64.tar.gz"
+url = "https://github.com/danidoble/orchest/releases/download/php-8.4.15-linux-x86_64-r2/php-8.4.15-linux-x86_64.tar.gz"
 archive = "tar.gz"
 executable = "bin/php"
 
@@ -51,6 +51,6 @@ archive = "zip"
 executable = "php.exe"
 
 [versions.linux-x86_64]
-url = "https://github.com/danidoble/orchest/releases/download/php-8.5.10-linux-x86_64-r1/php-8.5.10-linux-x86_64.tar.gz"
+url = "https://github.com/danidoble/orchest/releases/download/php-8.5.10-linux-x86_64-r2/php-8.5.10-linux-x86_64.tar.gz"
 archive = "tar.gz"
 executable = "bin/php"

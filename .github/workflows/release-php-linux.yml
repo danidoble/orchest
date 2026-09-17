@@ -46,6 +46,8 @@ jobs:
               /opt/php/bin/php -r 'echo PHP_VERSION, PHP_EOL;'
             docker run --rm -v "$PWD/dist/installed:/opt/php:ro" "$image" \
               /opt/php/sbin/php-fpm -v
+            docker run --rm -v "$PWD/dist/installed:/opt/php:ro" "$image" \
+              /opt/php/bin/php -r 'foreach (["bz2","curl","dom","gd","imagick","intl","mbstring","mysqli","pdo_mysql","pdo_pgsql","pdo_sqlite","pgsql","sqlite3","xml","zip"] as $extension) { if (!extension_loaded($extension)) { fwrite(STDERR, "missing $extension\n"); exit(1); } }'
           done
       - name: Publish immutable release asset
         env:

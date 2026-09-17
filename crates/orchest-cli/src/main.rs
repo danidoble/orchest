@@ -6,6 +6,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     process::ExitCode,
+    time::Duration,
 };
 
 #[derive(Parser)]
@@ -29,6 +30,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Init,
+    Ssl {
+        #[command(subcommand)]
+        command: SslCommand,
+    },
+    #[command(name = "__ssl-renew-loop", hide = true)]
+    InternalSslRenewLoop,
     Status,
     Doctor,
     Port {
@@ -63,6 +70,10 @@ enum Command {
     },
 }
 #[derive(Subcommand)]
+enum SslCommand {
+    Renew,
+}
+#[derive(Subcommand)]
 enum ConfigCommand {
     Show,
     Get { key: String },
@@ -94,6 +105,12 @@ enum PackageCommand {
 #[derive(Subcommand)]
 enum PhpCommand {
     List,
+    Extensions {
+        version: String,
+    },
+    Imagick {
+        version: String,
+    },
     Install {
         version: String,
         #[arg(long)]
@@ -113,6 +130,7 @@ enum ServiceCommand {
     Status { name: String },
     Start { name: String },
     Stop { name: String },
+    Reload { name: String },
     Config { name: String },
 }
 #[derive(Subcommand)]
@@ -129,6 +147,14 @@ enum ProjectCommand {
     Php {
         name: String,
         version: String,
+    },
+    WebServer {
+        name: String,
+        server: String,
+    },
+    Ssl {
+        name: String,
+        enabled: String,
     },
     Exec {
         name: String,
@@ -179,6 +205,22 @@ fn run(cli: &Cli) -> Result<(Value, i32), OrchestError> {
     };
     let output = match &cli.command {
         Command::Init => json!({"root":app.root(),"initialized":true}),
+        Command::Ssl { command } => match command {
+            SslCommand::Renew => json!({"renewed":app.renew_ssl()?}),
+        },
+        Command::InternalSslRenewLoop => {
+            let interval = env::var("ORCHEST_SSL_RENEW_INTERVAL_SECS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| (1..=86400).contains(value))
+                .unwrap_or(21600);
+            loop {
+                std::thread::sleep(Duration::from_secs(interval));
+                if let Err(error) = app.renew_ssl() {
+                    eprintln!("SSL renewal failed: {error}");
+                }
+            }
+        }
         Command::Status => {
             json!({"root":app.root(),"installed":app.installed(None)?.len(),"projects":app.projects()?.len()})
         }
@@ -235,6 +277,10 @@ fn run(cli: &Cli) -> Result<(Value, i32), OrchestError> {
         },
         Command::Php { command } => match command {
             PhpCommand::List => json!(app.installed(Some("php"))?),
+            PhpCommand::Extensions { version } => {
+                json!({"version":version,"extensions":app.php_extensions(version)?})
+            }
+            PhpCommand::Imagick { version } => json!(app.install("php-imagick", version)?),
             PhpCommand::Install { version, archive } => json!(if let Some(archive) = archive {
                 app.install_from_archive("php", version, archive)?
             } else {
@@ -252,8 +298,20 @@ fn run(cli: &Cli) -> Result<(Value, i32), OrchestError> {
             }
             ServiceCommand::Start { name } => json!(app.start_service(name)?),
             ServiceCommand::Stop { name } => json!({"name":name,"status":app.stop_service(name)?}),
+            ServiceCommand::Reload { name } if name == "nginx" => {
+                app.reload_nginx()?;
+                json!({"name":name,"reloaded":true})
+            }
+            ServiceCommand::Reload { name } => {
+                return Err(OrchestError::InvalidInput(format!(
+                    "reload is unavailable for {name}"
+                )))
+            }
             ServiceCommand::Config { name } if name == "nginx" => {
                 json!({"name":name,"config":app.nginx_config()?})
+            }
+            ServiceCommand::Config { name } if name == "apache" => {
+                json!({"name":name,"config":app.apache_config()?})
             }
             ServiceCommand::Config { name } => {
                 return Err(OrchestError::InvalidInput(format!(
@@ -269,6 +327,21 @@ fn run(cli: &Cli) -> Result<(Value, i32), OrchestError> {
             }),
             ProjectCommand::Show { name } => json!(app.project(name)?),
             ProjectCommand::Php { name, version } => json!(app.set_project_php(name, version)?),
+            ProjectCommand::WebServer { name, server } => {
+                json!(app.set_project_web_server(name, server)?)
+            }
+            ProjectCommand::Ssl { name, enabled } => {
+                let enabled = match enabled.as_str() {
+                    "on" | "true" => true,
+                    "off" | "false" => false,
+                    _ => {
+                        return Err(OrchestError::InvalidInput(
+                            "SSL value must be on or off".into(),
+                        ))
+                    }
+                };
+                json!(app.set_project_ssl(name, enabled)?)
+            }
             ProjectCommand::Exec { name, args } => return exec(&app, Some(name), args, cli.json),
         },
         Command::Exec { project, args } => return exec(&app, project.as_deref(), args, cli.json),

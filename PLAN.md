@@ -4,6 +4,16 @@
 
 Esta lista registra el estado real del proyecto. `[x]` significa implementado y verificado en el entorno indicado; `[ ]` significa pendiente. Los requisitos detallados siguen en las secciones originales de este documento. La sección 32 describe el objetivo inicial, no su estado actual.
 
+### Próxima iteración: recarga web y compatibilidad PHP (`NOTES.md`)
+
+- [ ] Confirmar en la VM Windows que `v0.1.0-alpha.6` sirve `demo.test/index.php` y que `root` aparece como `C:/...` en la configuración de Nginx. Registrar el resultado antes de marcar completa la validación Windows.
+- [x] Habilitar recarga real de Nginx: supervisar el maestro y sus hijos, ejecutar `nginx -t` y luego `nginx -s reload`, y comprobar que sigue activo. Falta validar esta ruta en VM Windows.
+- [x] Al cambiar `defaults.php` o la versión PHP de un proyecto por CLI/API: iniciar el backend nuevo, validar y recargar Nginx, retirar los backends que ya no se usan y revertir ante errores. Verificado en contenedor Linux; falta VM Windows.
+- [x] Escuchar en 80/443 por defecto, con certificados locales por dominio y renovación automática mientras Nginx esté activo. HTTPS se verificó en contenedor Linux; falta VM Windows y decidir si se desea instalar la CA como confiable.
+- [x] Añadir Apache solo para sitios con `web_server=apache` explícito: escucha en `127.0.0.1:8080` y Nginx le envía esos dominios, conservando `Host` y la IP del cliente. Los sitios sin selección explícita usan Nginx con PHP FastCGI incluso si una configuración antigua conserva `defaults.web_server=apache`. Verificado en contenedor Linux; falta VM Windows.
+- [x] Inventariar y documentar módulos de PHP 8.2–8.5 por framework; compilar `mbstring`, `imagick`, `gd`, `zip`, `xml`, `curl`, MySQL/PDO, PostgreSQL, SQLite, `intl` y `bz2` en los nuevos artefactos Linux. Los cuatro se verificaron con `php -m` en Ubuntu 24.04 y Debian 12 y con petición web para 8.4/8.5. Windows habilita DLL presentes e instala Imagick desde PECL; falta validarlo en VM.
+- [ ] Publicar los nuevos artefactos Linux de Nginx con SSL (`r2`), Apache (`r1`) y PHP 8.2–8.5 con extensiones (`r2`); actualizar sus manifests y verificar instalación desde las URLs públicas. Los archivos locales ya están compilados y probados.
+
 ### Hito 1: CLI y PHP administrado (secciones 1–10, 17–18, 23–28)
 
 - [x] Workspace Cargo con `core`, `cli`, `api`, `platform`, `packages` y `process`; configuración TOML y estado de paquetes/proyectos en SQLite.
@@ -59,23 +69,23 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [ ] Validar Nginx y PHP en VMs Windows/Linux: instalación, rutas con espacios, `php-cgi.exe`/FPM, dos versiones, respuesta HTTP por Host, parada y recuperación.
 - [x] Publicar una nueva prerelease de Orchest CLI/API con Nginx y FastCGI antes de la prueba en VMs; el workflow es manual para controlar minutos de GitHub Actions (`v0.1.0-alpha.3`).
 - [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.
-- [ ] Añadir manifests, instalación autocontenida y configuraciones para Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
+- [ ] Añadir manifests, instalación autocontenida y configuraciones para MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias. Apache ya dispone de manifest, configuración y build local; falta publicar su asset y validar Windows.
 - [ ] Identificar el PID propietario de puertos ocupados por procesos externos y verificar la propiedad del socket del servicio administrado en Windows y Linux.
-- [ ] Implementar proxy de entrada 80/443, selección Nginx/Apache por proyecto y configuraciones generadas y validadas.
+- [x] Implementar entrada Nginx 80/443 y selección por proyecto: Nginx con FastCGI es el valor predeterminado y solo `project web-server NOMBRE apache` activa el proxy hacia Apache. Configuraciones generadas y validadas en contenedor Linux; falta VM Windows.
 - [ ] Completar endurecimiento del proxy PHP: verificar Windows en VM, diagnosticar/reasignar puertos FastCGI ocupados por procesos externos y recuperación tras caídas.
 - [ ] Implementar datos persistentes por instancia, inicio/parada de proyectos, dominios `.test`, hosts y certificados locales con confianza opcional.
 - [ ] Añadir eventos del núcleo para progreso de instalaciones y cambios de procesos/proyectos.
 
 ### Cola de integraciones de servicios (iteraciones posteriores)
 
-- [ ] Completar servidores web: Nginx y PHP por proyecto funcionan en Linux aislado y el asset Linux está publicado; falta verificar Windows en VM, HTTPS/proxy 80/443 y Apache.
+- [ ] Completar servidores web: Nginx, PHP, HTTPS y Apache por proyecto funcionan en Linux aislado; faltan publicación de los nuevos assets y validación en VM Windows.
 - [ ] Node.js con `npm` y `pnpm` mediante Corepack; selección de versión global y por proyecto.
 - [ ] Bases de datos: MariaDB 11 y 12, MySQL 8, MongoDB y Redis; directorios de datos y puertos por instancia, respaldo y recuperación.
 - [x] Servicio auxiliar Meilisearch integrado en CLI/API y probado en Linux.
 - [ ] RustFS como almacenamiento S3 local; no agregar MinIO.
 - [ ] Herramientas PHP: Composer y phpMyAdmin vinculados a la versión PHP y al proyecto apropiados.
 - [ ] Scheduler y Queue worker por proyecto, con arranque/parada, logs, reinicio y recuperación.
-- [ ] SSL local automático y renovable, con certificados por dominio y confianza del sistema opcional.
+- [x] SSL local automático y renovable, con certificados por dominio y confianza del sistema opcional; verificado en contenedor Linux. Pendiente comprobar Windows y documentar el procedimiento de confianza de la CA.
 - [ ] Paridad CLI/API para instalación, configuración, inicio, parada, estado y logs de cada servicio.
 
 ### API, escritorio y aceptación (secciones 20–22, 29–31)

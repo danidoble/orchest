@@ -13,6 +13,6 @@ strip_components = 1
 executable = "nginx.exe"
 
 [versions.linux-x86_64]
-url = "https://github.com/danidoble/orchest/releases/download/nginx-1.30.5-linux-x86_64-r1/nginx-1.30.5-linux-x86_64.tar.gz"
+url = "https://github.com/danidoble/orchest/releases/download/nginx-1.30.5-linux-x86_64-r2/nginx-1.30.5-linux-x86_64.tar.gz"
 archive = "tar.gz"
 executable = "sbin/nginx"

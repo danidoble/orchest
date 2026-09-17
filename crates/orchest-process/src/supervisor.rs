@@ -9,7 +9,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
+use sysinfo::{Pid, ProcessStatus, ProcessesToUpdate, Signal, System};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessState {
@@ -119,7 +119,8 @@ impl Supervisor {
         let Some(process) = system.process(Pid::from_u32(state.pid)) else {
             return Ok(ServiceStatus::Stale);
         };
-        if process.start_time() == state.process_start_time
+        if process.status() != ProcessStatus::Zombie
+            && process.start_time() == state.process_start_time
             && same_executable(process.exe(), &state.executable)
         {
             Ok(ServiceStatus::Running)
@@ -252,18 +253,31 @@ impl Supervisor {
         {
             return Err(ProcessError::IdentityMismatch(state.pid));
         }
+        let descendants = descendants_of(&system, Pid::from_u32(state.pid));
         if process.kill_with(Signal::Term).is_none() {
             process.kill();
         }
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if self.status_instance(service_id, instance_id)? != ServiceStatus::Running {
+            let current = System::new_all();
+            if !tracked_process_alive(&current, Pid::from_u32(state.pid), state.process_start_time)
+                && !descendants
+                    .iter()
+                    .any(|(pid, start)| tracked_process_alive(&current, *pid, *start))
+            {
                 fs::remove_file(&state_path)?;
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(100));
         }
         let system = System::new_all();
+        for (pid, start) in &descendants {
+            if let Some(child) = system.process(*pid) {
+                if child.start_time() == *start && child.status() != ProcessStatus::Zombie {
+                    child.kill();
+                }
+            }
+        }
         if let Some(process) = system.process(Pid::from_u32(state.pid)) {
             if process.start_time() == state.process_start_time
                 && same_executable(process.exe(), &state.executable)
@@ -271,7 +285,12 @@ impl Supervisor {
                 process.kill();
             }
         }
-        if self.status_instance(service_id, instance_id)? == ServiceStatus::Running {
+        let system = System::new_all();
+        if tracked_process_alive(&system, Pid::from_u32(state.pid), state.process_start_time)
+            || descendants
+                .iter()
+                .any(|(pid, start)| tracked_process_alive(&system, *pid, *start))
+        {
             return Err(ProcessError::StopTimeout);
         }
         fs::remove_file(&state_path)?;
@@ -354,6 +373,27 @@ impl Supervisor {
     }
 }
 
+fn tracked_process_alive(system: &System, pid: Pid, start: u64) -> bool {
+    system.process(pid).is_some_and(|process| {
+        process.start_time() == start && process.status() != ProcessStatus::Zombie
+    })
+}
+
+fn descendants_of(system: &System, root: Pid) -> Vec<(Pid, u64)> {
+    let mut seen = std::collections::HashSet::from([root]);
+    let mut pending = vec![root];
+    let mut result = Vec::new();
+    while let Some(parent) = pending.pop() {
+        for (pid, process) in system.processes() {
+            if process.parent() == Some(parent) && seen.insert(*pid) {
+                result.push((*pid, process.start_time()));
+                pending.push(*pid);
+            }
+        }
+    }
+    result
+}
+
 fn same_executable(actual: Option<&Path>, recorded: &Path) -> bool {
     let Some(actual) = actual else {
         return false;
@@ -373,6 +413,38 @@ mod identity_tests {
         let canonical = executable.canonicalize().unwrap();
         assert!(same_executable(Some(&executable), &canonical));
         assert!(!same_executable(None, &canonical));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_service_reaps_its_child_process() {
+        let root = tempfile::tempdir().unwrap();
+        let supervisor = Supervisor::new(root.path().join("state"), root.path().join("logs"));
+        let process = supervisor
+            .start(
+                "tree",
+                Path::new("/bin/sh"),
+                &["-c".into(), "sleep 30 & wait".into()],
+                None,
+            )
+            .unwrap();
+        let parent = Pid::from_u32(process.pid);
+        let children = (0..20)
+            .find_map(|_| {
+                let found = descendants_of(&System::new_all(), parent);
+                if found.is_empty() {
+                    thread::sleep(Duration::from_millis(50));
+                    None
+                } else {
+                    Some(found)
+                }
+            })
+            .expect("shell did not create child");
+        supervisor.stop("tree").unwrap();
+        let system = System::new_all();
+        assert!(children
+            .iter()
+            .all(|(pid, start)| !tracked_process_alive(&system, *pid, *start)));
     }
 }
 

@@ -1,0 +1,32 @@
+[package]
+id = "php-imagick"
+name = "Imagick 3.8.1 for PHP"
+type = "extension"
+
+[[versions]]
+version = "8.2.33"
+[versions.windows-x86_64]
+url = "https://downloads.php.net/~windows/pecl/releases/imagick/3.8.1/php_imagick-3.8.1-8.2-nts-vs16-x64.zip"
+archive = "zip"
+executable = "php_imagick.dll"
+
+[[versions]]
+version = "8.3.33"
+[versions.windows-x86_64]
+url = "https://downloads.php.net/~windows/pecl/releases/imagick/3.8.1/php_imagick-3.8.1-8.3-nts-vs16-x64.zip"
+archive = "zip"
+executable = "php_imagick.dll"
+
+[[versions]]
+version = "8.4.15"
+[versions.windows-x86_64]
+url = "https://downloads.php.net/~windows/pecl/releases/imagick/3.8.1/php_imagick-3.8.1-8.4-nts-vs17-x64.zip"
+archive = "zip"
+executable = "php_imagick.dll"
+
+[[versions]]
+version = "8.5.10"
+[versions.windows-x86_64]
+url = "https://downloads.php.net/~windows/pecl/releases/imagick/3.8.1/php_imagick-3.8.1-8.5-nts-vs17-x64.zip"
+archive = "zip"
+executable = "php_imagick.dll"

@@ -44,6 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(ApiState { orchest, token });
     let routes = Router::new()
         .route("/api/v1/status", get(status))
+        .route("/api/v1/config", get(show_config).patch(set_config))
         .route("/api/v1/packages", get(packages))
         .route("/api/v1/packages/installed", get(installed))
         .route("/api/v1/packages/:package/install", post(install))
@@ -54,10 +55,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/v1/projects", get(projects).post(add_project))
         .route("/api/v1/projects/:name", get(project))
         .route("/api/v1/projects/:name/php", post(set_php))
+        .route("/api/v1/php/:version/extensions", get(php_extensions))
+        .route("/api/v1/projects/:name/web-server", post(set_web_server))
+        .route("/api/v1/projects/:name/ssl", post(set_ssl))
         .route("/api/v1/services/:name", get(service_status))
         .route("/api/v1/services/:name/config", get(service_config))
         .route("/api/v1/services/:name/start", post(start_service))
         .route("/api/v1/services/:name/stop", post(stop_service))
+        .route("/api/v1/services/:name/reload", post(reload_service))
+        .route("/api/v1/ssl/renew", post(renew_ssl))
         .route("/api/v1/doctor", get(doctor))
         .route("/api/v1/ports", get(ports))
         .route("/api/v1/ports/:port", get(check_port))
@@ -105,6 +111,33 @@ async fn status(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> ApiRe
     Ok(Json(
         json!({"root":state.orchest.root(),"installed":state.orchest.installed(None).map_err(error)?.len(),"projects":state.orchest.projects().map_err(error)?.len()}),
     ))
+}
+async fn show_config(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> ApiResult {
+    authorize(&headers, &state)?;
+    Ok(Json(json!(state.orchest.config().map_err(error)?)))
+}
+#[derive(Deserialize)]
+struct ConfigSetBody {
+    key: String,
+    value: String,
+}
+async fn set_config(
+    State(state): State<Arc<ApiState>>,
+    headers: HeaderMap,
+    Json(body): Json<ConfigSetBody>,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    let config =
+        tokio::task::spawn_blocking(move || state.orchest.config_set(&body.key, &body.value))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error":{"code":"task_error","message":e.to_string()}})),
+                )
+            })?
+            .map_err(error)?;
+    Ok(Json(json!(config)))
 }
 async fn packages(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> ApiResult {
     authorize(&headers, &state)?;
@@ -200,8 +233,50 @@ async fn set_php(
         .set_project_php(&name, &body.version)
         .map_err(error)?)))
 }
+async fn php_extensions(
+    State(state): State<Arc<ApiState>>,
+    Path(version): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    Ok(Json(
+        json!({"version":version,"extensions":state.orchest.php_extensions(&version).map_err(error)?}),
+    ))
+}
+#[derive(Deserialize)]
+struct WebServerBody {
+    server: String,
+}
+async fn set_web_server(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<WebServerBody>,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    Ok(Json(json!(state
+        .orchest
+        .set_project_web_server(&name, &body.server)
+        .map_err(error)?)))
+}
+#[derive(Deserialize)]
+struct SslBody {
+    enabled: bool,
+}
+async fn set_ssl(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<SslBody>,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    Ok(Json(json!(state
+        .orchest
+        .set_project_ssl(&name, body.enabled)
+        .map_err(error)?)))
+}
 fn supported_service(name: &str) -> Result<(), (StatusCode, Json<Value>)> {
-    if matches!(name, "mailpit" | "meilisearch" | "nginx")
+    if matches!(name, "mailpit" | "meilisearch" | "nginx" | "apache")
         || name
             .strip_prefix("php@")
             .is_some_and(|version| !version.is_empty())
@@ -222,14 +297,14 @@ async fn service_config(
     headers: HeaderMap,
 ) -> ApiResult {
     authorize(&headers, &state)?;
-    if name != "nginx" {
+    if name != "nginx" && name != "apache" {
         supported_service(&name)?;
         return Err(error(OrchestError::InvalidInput(format!(
             "configuration preview is unavailable for {name}"
         ))));
     }
     Ok(Json(
-        json!({"name":name,"config":state.orchest.nginx_config().map_err(error)?}),
+        json!({"name":name,"config":if name == "nginx" {state.orchest.nginx_config().map_err(error)?} else {state.orchest.apache_config().map_err(error)?}}),
     ))
 }
 async fn service_status(
@@ -279,6 +354,41 @@ async fn stop_service(
         })?
         .map_err(error)?;
     Ok(Json(json!({"name":name,"status":status})))
+}
+async fn reload_service(
+    State(state): State<Arc<ApiState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> ApiResult {
+    authorize(&headers, &state)?;
+    if name != "nginx" {
+        return Err(error(OrchestError::InvalidInput(format!(
+            "reload is unavailable for {name}"
+        ))));
+    }
+    tokio::task::spawn_blocking(move || state.orchest.reload_nginx())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":{"code":"task_error","message":e.to_string()}})),
+            )
+        })?
+        .map_err(error)?;
+    Ok(Json(json!({"name":name,"reloaded":true})))
+}
+async fn renew_ssl(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> ApiResult {
+    authorize(&headers, &state)?;
+    let renewed = tokio::task::spawn_blocking(move || state.orchest.renew_ssl())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error":{"code":"task_error","message":e.to_string()}})),
+            )
+        })?
+        .map_err(error)?;
+    Ok(Json(json!({"renewed":renewed})))
 }
 async fn doctor(State(state): State<Arc<ApiState>>, headers: HeaderMap) -> ApiResult {
     authorize(&headers, &state)?;

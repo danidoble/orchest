@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Prerelease version without the v prefix, for example 0.1.0-alpha.2
+        description: Prerelease version without the v prefix, for example 0.1.0-alpha.3
         required: true
         type: string
 
@@ -30,6 +30,15 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[1-9][0-9]*$ ]]
+          for manifest in crates/*/Cargo.toml; do
+            grep -Fxq "version = \"${VERSION}\"" "$manifest" || {
+              echo "$manifest does not match $VERSION" >&2
+              exit 1
+            }
+          done
+          [[ -f RELEASE_NOTES.md ]]
+          grep -Fxq "# Orchest v${VERSION}" RELEASE_NOTES.md
+          cargo metadata --locked --no-deps --format-version 1 >/dev/null
       - name: Install stable Rust tools
         run: |
           rustup update stable
@@ -94,5 +103,5 @@ jobs:
             "dist/orchest-v${VERSION}-windows-x86_64.zip" \
             dist/SHA256SUMS.txt \
             --target "$GITHUB_SHA" --title "Orchest v${VERSION}" \
-            --notes "Alpha build of Orchest CLI and API, with optional installation scripts for Linux and Windows." \
+            --notes-file RELEASE_NOTES.md \
             --prerelease --latest=false --repo "$GITHUB_REPOSITORY"

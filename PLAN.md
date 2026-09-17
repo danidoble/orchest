@@ -32,6 +32,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Preparar workflow **manual** de prerelease para empaquetar binarios e instaladores de ambos sistemas, sin consumo de Actions por cada push.
 - [x] Publicar `v0.1.0-alpha.2` con TAR Linux, ZIP Windows e `SHA256SUMS.txt` desde los artifacts de CI; los jobs de build pasaron en ambos sistemas. La publicación manual evitó recompilar tras corregir el job de publicación.
 - [x] Crear `./publish.sh` interactivo para incrementar la versión de los seis crates y `Cargo.lock`, generar notas, ejecutar pruebas locales, confirmar el push y lanzar el workflow manual.
+- [x] Publicar `v0.1.0-alpha.3` con Nginx y PHP FastCGI para Linux/Windows, instaladores y `SHA256SUMS.txt`; ambos jobs de build pasaron en el run `35167021776`. El job de publicación requirió añadir `actions/checkout`; se reutilizaron los artefactos del run para evitar otra compilación.
 - [x] Descargar el TAR público de `alpha.2`, verificar SHA-256 y ejecutar su instalador dentro de un contenedor Ubuntu 26.04; `orchest --version` y `init` funcionaron.
 - [x] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta (validación confirmada por el usuario).
 - [ ] Definir actualización del propio Orchest.
@@ -50,7 +51,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Exponer `php@VERSION` por CLI/API para estado, inicio y parada; impedir desinstalar una versión PHP con backend FastCGI en ejecución.
 - [x] Publicar el artefacto Linux de Nginx en GitHub Releases (`nginx-1.30.5-linux-x86_64-r1`) y comprobar que la URL del manifest descarga el mismo SHA-256 (`79439e19028bb7f2d91f9e1ffd3f737c21fd6822a6abade82f7dca9b43b0005d`).
 - [ ] Validar Nginx y PHP en VMs Windows/Linux: instalación, rutas con espacios, `php-cgi.exe`/FPM, dos versiones, respuesta HTTP por Host, parada y recuperación.
-- [ ] Publicar una nueva prerelease de Orchest CLI/API con Nginx y FastCGI antes de la prueba en VMs; el workflow es manual para controlar minutos de GitHub Actions.
+- [x] Publicar una nueva prerelease de Orchest CLI/API con Nginx y FastCGI antes de la prueba en VMs; el workflow es manual para controlar minutos de GitHub Actions (`v0.1.0-alpha.3`).
 - [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.
 - [ ] Añadir manifests, instalación autocontenida y configuraciones para Apache, MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias.
 - [ ] Identificar el PID propietario de puertos ocupados por procesos externos y verificar la propiedad del socket del servicio administrado en Windows y Linux.

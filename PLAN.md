@@ -12,7 +12,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Escuchar en 80/443 por defecto, con certificados locales por dominio y renovación automática mientras Nginx esté activo. HTTPS se verificó en contenedor Linux; falta VM Windows y decidir si se desea instalar la CA como confiable.
 - [x] Añadir Apache solo para sitios con `web_server=apache` explícito: escucha en `127.0.0.1:8080` y Nginx le envía esos dominios, conservando `Host` y la IP del cliente. Los sitios sin selección explícita usan Nginx con PHP FastCGI incluso si una configuración antigua conserva `defaults.web_server=apache`. Verificado en contenedor Linux; falta VM Windows.
 - [x] Inventariar y documentar módulos de PHP 8.2–8.5 por framework; compilar `mbstring`, `imagick`, `gd`, `zip`, `xml`, `curl`, MySQL/PDO, PostgreSQL, SQLite, `intl` y `bz2` en los nuevos artefactos Linux. Los cuatro se verificaron con `php -m` en Ubuntu 24.04 y Debian 12 y con petición web para 8.4/8.5. Windows habilita DLL presentes e instala Imagick desde PECL; falta validarlo en VM.
-- [ ] Publicar los nuevos artefactos Linux de Nginx con SSL (`r2`), Apache (`r1`) y PHP 8.2–8.5 con extensiones (`r2`); actualizar sus manifests y verificar instalación desde las URLs públicas. Los archivos locales ya están compilados y probados.
+- [x] Publicar los nuevos artefactos Linux de Nginx con SSL (`r2`), Apache (`r1`) y PHP 8.2–8.5 con extensiones (`r2`); los seis Releases y las URLs en los manifests corresponden al commit `7a9a133`. Los archivos locales pasaron pruebas en contenedores. Falta verificar una instalación nueva descargando las URLs públicas y comparar sus SHA-256.
 
 ### Hito 1: CLI y PHP administrado (secciones 1–10, 17–18, 23–28)
 
@@ -69,7 +69,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [ ] Validar Nginx y PHP en VMs Windows/Linux: instalación, rutas con espacios, `php-cgi.exe`/FPM, dos versiones, respuesta HTTP por Host, parada y recuperación.
 - [x] Publicar una nueva prerelease de Orchest CLI/API con Nginx y FastCGI antes de la prueba en VMs; el workflow es manual para controlar minutos de GitHub Actions (`v0.1.0-alpha.3`).
 - [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.
-- [ ] Añadir manifests, instalación autocontenida y configuraciones para MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias. Apache ya dispone de manifest, configuración y build local; falta publicar su asset y validar Windows.
+- [ ] Añadir manifests, instalación autocontenida y configuraciones para MySQL, MariaDB, MongoDB, Redis y Node; preservar varias versiones e instancias. Apache ya dispone de manifest, configuración y asset Linux publicado; falta validar Windows.
 - [ ] Identificar el PID propietario de puertos ocupados por procesos externos y verificar la propiedad del socket del servicio administrado en Windows y Linux.
 - [x] Implementar entrada Nginx 80/443 y selección por proyecto: Nginx con FastCGI es el valor predeterminado y solo `project web-server NOMBRE apache` activa el proxy hacia Apache. Configuraciones generadas y validadas en contenedor Linux; falta VM Windows.
 - [ ] Completar endurecimiento del proxy PHP: verificar Windows en VM, diagnosticar/reasignar puertos FastCGI ocupados por procesos externos y recuperación tras caídas.
@@ -78,7 +78,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 
 ### Cola de integraciones de servicios (iteraciones posteriores)
 
-- [ ] Completar servidores web: Nginx, PHP, HTTPS y Apache por proyecto funcionan en Linux aislado; faltan publicación de los nuevos assets y validación en VM Windows.
+- [ ] Completar servidores web: Nginx, PHP, HTTPS y Apache por proyecto funcionan en Linux aislado y los nuevos assets están publicados; faltan instalación limpia desde los Releases y validación en VM Windows.
 - [ ] Node.js con `npm` y `pnpm` mediante Corepack; selección de versión global y por proyecto.
 - [ ] Bases de datos: MariaDB 11 y 12, MySQL 8, MongoDB y Redis; directorios de datos y puertos por instancia, respaldo y recuperación.
 - [x] Servicio auxiliar Meilisearch integrado en CLI/API y probado en Linux.

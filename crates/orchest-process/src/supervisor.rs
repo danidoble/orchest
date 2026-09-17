@@ -120,7 +120,7 @@ impl Supervisor {
             return Ok(ServiceStatus::Stale);
         };
         if process.start_time() == state.process_start_time
-            && process.exe() == Some(state.executable.as_path())
+            && same_executable(process.exe(), &state.executable)
         {
             Ok(ServiceStatus::Running)
         } else {
@@ -248,7 +248,7 @@ impl Supervisor {
             return Ok(());
         };
         if process.start_time() != state.process_start_time
-            || process.exe() != Some(state.executable.as_path())
+            || !same_executable(process.exe(), &state.executable)
         {
             return Err(ProcessError::IdentityMismatch(state.pid));
         }
@@ -266,7 +266,7 @@ impl Supervisor {
         let system = System::new_all();
         if let Some(process) = system.process(Pid::from_u32(state.pid)) {
             if process.start_time() == state.process_start_time
-                && process.exe() == Some(state.executable.as_path())
+                && same_executable(process.exe(), &state.executable)
             {
                 process.kill();
             }
@@ -351,6 +351,28 @@ impl Supervisor {
             }
         }
         Ok(recovered)
+    }
+}
+
+fn same_executable(actual: Option<&Path>, recorded: &Path) -> bool {
+    let Some(actual) = actual else {
+        return false;
+    };
+    actual == recorded || actual.canonicalize().is_ok_and(|path| path == recorded)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn executable_identity_accepts_equivalent_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("php-cgi.exe");
+        fs::write(&executable, b"fixture").unwrap();
+        let canonical = executable.canonicalize().unwrap();
+        assert!(same_executable(Some(&executable), &canonical));
+        assert!(!same_executable(None, &canonical));
     }
 }
 

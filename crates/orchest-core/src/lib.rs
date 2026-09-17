@@ -8,11 +8,11 @@ use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -1065,19 +1065,39 @@ impl Orchest {
             },
         )?;
         let address = SocketAddr::from(([127, 0, 0, 1], port));
-        for _ in 0..30 {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut unverified_listener = false;
+        while Instant::now() < deadline {
             if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
-                return Ok(process);
-            }
-            if self.supervisor().status_instance("php-web", &instance_id)? != ServiceStatus::Running
-            {
-                break;
+                if self.supervisor().status_instance("php-web", &instance_id)?
+                    == ServiceStatus::Running
+                {
+                    return Ok(process);
+                }
+                unverified_listener = true;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        let _ = self.stop_managed_service("php-web", &instance_id);
+        let status = self.supervisor().status_instance("php-web", &instance_id)?;
+        let stderr_path = self
+            .root
+            .join("logs/services/php-web")
+            .join(&instance_id)
+            .join("stderr.log");
+        let stderr = recent_log_excerpt(&stderr_path)
+            .unwrap_or_else(|| "no error output was recorded".into());
+        let cleanup = self.stop_managed_service("php-web", &instance_id).err();
+        let listener_detail = if unverified_listener {
+            "a listener appeared, but the managed process identity could not be verified"
+        } else {
+            "no listener appeared within 15 seconds"
+        };
         Err(OrchestError::Config(format!(
-            "PHP FastCGI {version} did not listen on 127.0.0.1:{port}; inspect logs/services/php-web/{instance_id}"
+            "PHP FastCGI {version} could not start on 127.0.0.1:{port}: {listener_detail}; process status: {status:?}; stderr: {stderr}; log: {}{}",
+            stderr_path.display(),
+            cleanup
+                .map(|error| format!("; cleanup failed: {error}"))
+                .unwrap_or_default()
         )))
     }
     pub fn stop_php_web(&self, version: &str) -> Result<ServiceStatus> {
@@ -1535,6 +1555,21 @@ fn nginx_path(path: &Path) -> Result<String> {
         )));
     }
     Ok(path.replace('\\', "/"))
+}
+
+fn recent_log_excerpt(path: &Path) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(length.saturating_sub(2048)))
+        .ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text: String = String::from_utf8_lossy(&bytes)
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n' || *character == '\t')
+        .collect();
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 fn prepare_nginx_prefix(prefix: &Path) -> Result<()> {

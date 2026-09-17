@@ -50,6 +50,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Implementar el backend Windows mediante `php-cgi.exe -b` con `php.ini` y `conf.d` de cada versión; el ZIP oficial 8.4.15 fue inspeccionado y contiene `php-cgi.exe`. Falta validar ejecución HTTP en VM Windows.
 - [x] Exponer `php@VERSION` por CLI/API para estado, inicio y parada; impedir desinstalar una versión PHP con backend FastCGI en ejecución.
 - [x] Publicar el artefacto Linux de Nginx en GitHub Releases (`nginx-1.30.5-linux-x86_64-r1`) y comprobar que la URL del manifest descarga el mismo SHA-256 (`79439e19028bb7f2d91f9e1ffd3f737c21fd6822a6abade82f7dca9b43b0005d`).
+- [x] Corregir la validación inicial de Nginx en Windows: crear los cinco directorios temporales bajo el prefijo administrado y declararlos en la configuración antes de ejecutar `nginx -t`. Pruebas locales de configuración y directorios superadas; falta verificar el binario nuevo en VM Windows.
 - [ ] Validar Nginx y PHP en VMs Windows/Linux: instalación, rutas con espacios, `php-cgi.exe`/FPM, dos versiones, respuesta HTTP por Host, parada y recuperación.
 - [x] Publicar una nueva prerelease de Orchest CLI/API con Nginx y FastCGI antes de la prueba en VMs; el workflow es manual para controlar minutos de GitHub Actions (`v0.1.0-alpha.3`).
 - [ ] Conectar los demás servicios y probar procesos/árboles en Windows y Linux.

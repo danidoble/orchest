@@ -1099,7 +1099,7 @@ impl Orchest {
             return Err(OrchestError::Config("invalid domain suffix".into()));
         }
         let mut output = format!(
-            "worker_processes 1;\npid logs/nginx.pid;\nerror_log logs/error.log;\nevents {{ worker_connections 256; }}\nhttp {{\n    access_log logs/access.log;\n    server {{ listen 127.0.0.1:{} default_server; server_name _; return 404; }}\n",
+            "worker_processes 1;\npid logs/nginx.pid;\nerror_log logs/error.log;\nevents {{ worker_connections 256; }}\nhttp {{\n    access_log logs/access.log;\n    client_body_temp_path temp/client_body_temp;\n    proxy_temp_path temp/proxy_temp;\n    fastcgi_temp_path temp/fastcgi_temp;\n    uwsgi_temp_path temp/uwsgi_temp;\n    scgi_temp_path temp/scgi_temp;\n    server {{ listen 127.0.0.1:{} default_server; server_name _; return 404; }}\n",
             config.ports.nginx_http
         );
         let mut domains = std::collections::BTreeSet::new();
@@ -1157,7 +1157,7 @@ impl Orchest {
             .max_by_key(|entry| numeric_version(&entry.version))
             .ok_or_else(|| OrchestError::RuntimeNotInstalled("nginx".into()))?;
         let prefix = self.root.join("runtime/generated/nginx");
-        fs::create_dir_all(prefix.join("logs"))?;
+        prepare_nginx_prefix(&prefix)?;
         let configuration = prefix.join("nginx.conf");
         atomic_write(&configuration, self.nginx_config()?.as_bytes())?;
         let prefix_arg = format!("{}/", prefix.display());
@@ -1537,6 +1537,20 @@ fn nginx_path(path: &Path) -> Result<String> {
     Ok(path.replace('\\', "/"))
 }
 
+fn prepare_nginx_prefix(prefix: &Path) -> Result<()> {
+    fs::create_dir_all(prefix.join("logs"))?;
+    for directory in [
+        "client_body_temp",
+        "proxy_temp",
+        "fastcgi_temp",
+        "uwsgi_temp",
+        "scgi_temp",
+    ] {
+        fs::create_dir_all(prefix.join("temp").join(directory))?;
+    }
+    Ok(())
+}
+
 fn php_web_instance_id(version: &str) -> String {
     let mut id = String::from("v");
     for byte in version.bytes() {
@@ -1656,6 +1670,31 @@ mod tests {
         assert!(config
             .contains("location ~* \\.(?:phtml|phar|php[0-9]?|inc)(?:$|[./]) { return 404; }"));
         assert!(config.contains("listen 127.0.0.1:80 default_server"));
+        for (directive, directory) in [
+            ("client_body_temp_path", "client_body_temp"),
+            ("proxy_temp_path", "proxy_temp"),
+            ("fastcgi_temp_path", "fastcgi_temp"),
+            ("uwsgi_temp_path", "uwsgi_temp"),
+            ("scgi_temp_path", "scgi_temp"),
+        ] {
+            assert!(config.contains(&format!("{directive} temp/{directory};")));
+        }
+    }
+    #[test]
+    fn nginx_prefix_has_all_configured_temp_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let prefix = root.path().join("runtime/generated/nginx");
+        prepare_nginx_prefix(&prefix).unwrap();
+        assert!(prefix.join("logs").is_dir());
+        for directory in [
+            "client_body_temp",
+            "proxy_temp",
+            "fastcgi_temp",
+            "uwsgi_temp",
+            "scgi_temp",
+        ] {
+            assert!(prefix.join("temp").join(directory).is_dir());
+        }
     }
     #[test]
     fn nginx_uses_distinct_fastcgi_backends_for_project_php_versions() {

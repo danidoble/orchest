@@ -1652,7 +1652,7 @@ mod tests {
         let project = app.add_project_default("site").unwrap();
         let config = app.nginx_config().unwrap();
         assert!(config.contains("server_name site.test;"));
-        assert!(config.contains(&format!("root \"{}\";", project.path.display())));
+        assert!(config.contains(&format!("root \"{}\";", nginx_path(&project.path).unwrap())));
         assert!(config
             .contains("location ~* \\.(?:phtml|phar|php[0-9]?|inc)(?:$|[./]) { return 404; }"));
         assert!(config.contains("listen 127.0.0.1:80 default_server"));

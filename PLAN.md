@@ -33,6 +33,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Publicar `v0.1.0-alpha.2` con TAR Linux, ZIP Windows e `SHA256SUMS.txt` desde los artifacts de CI; los jobs de build pasaron en ambos sistemas. La publicación manual evitó recompilar tras corregir el job de publicación.
 - [x] Crear `./publish.sh` interactivo para incrementar la versión de los seis crates y `Cargo.lock`, generar notas, ejecutar pruebas locales, confirmar el push y lanzar el workflow manual.
 - [x] Publicar `v0.1.0-alpha.3` con Nginx y PHP FastCGI para Linux/Windows, instaladores y `SHA256SUMS.txt`; ambos jobs de build pasaron en el run `35167021776`. El job de publicación requirió añadir `actions/checkout`; se reutilizaron los artefactos del run para evitar otra compilación.
+- [x] Publicar `v0.1.0-alpha.4` con la corrección de directorios temporales de Nginx en Windows; run manual `35168781850` verde en builds Linux/Windows y publicación. El arranque real en VM Windows sigue pendiente de confirmación.
 - [x] Descargar el TAR público de `alpha.2`, verificar SHA-256 y ejecutar su instalador dentro de un contenedor Ubuntu 26.04; `orchest --version` y `init` funcionaron.
 - [x] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta (validación confirmada por el usuario).
 - [ ] Definir actualización del propio Orchest.

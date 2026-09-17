@@ -31,6 +31,7 @@ Esta lista registra el estado real del proyecto. `[x]` significa implementado y 
 - [x] Instalador Linux verificado dentro de un contenedor: copia binarios, añade PATH, ejecuta `orchest init` y crea `www` sin tocar el anfitrión.
 - [x] Preparar workflow **manual** de prerelease para empaquetar binarios e instaladores de ambos sistemas, sin consumo de Actions por cada push.
 - [x] Publicar `v0.1.0-alpha.2` con TAR Linux, ZIP Windows e `SHA256SUMS.txt` desde los artifacts de CI; los jobs de build pasaron en ambos sistemas. La publicación manual evitó recompilar tras corregir el job de publicación.
+- [x] Crear `./publish.sh` interactivo para incrementar la versión de los seis crates y `Cargo.lock`, generar notas, ejecutar pruebas locales, confirmar el push y lanzar el workflow manual.
 - [x] Descargar el TAR público de `alpha.2`, verificar SHA-256 y ejecutar su instalador dentro de un contenedor Ubuntu 26.04; `orchest --version` y `init` funcionaron.
 - [x] Ejecutar y verificar los instaladores en VMs Linux y Windows, incluido VC++ Redistributable, actualización del PATH y uso sin ruta absoluta (validación confirmada por el usuario).
 - [ ] Definir actualización del propio Orchest.

@@ -1,3 +1,3 @@
-# Orchest v0.1.0-alpha.5
+# Orchest v0.1.0-alpha.6
 
-Improves Windows PHP FastCGI startup by waiting longer, recognizing equivalent executable paths, and reporting process and log diagnostics.
+Fixes PHP requests on Windows by converting canonical project paths to Nginx and PHP compatible drive paths.

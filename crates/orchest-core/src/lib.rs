@@ -1544,16 +1544,41 @@ impl Orchest {
 
 fn nginx_path(path: &Path) -> Result<String> {
     let path = path.to_string_lossy();
+    nginx_path_text(&path, cfg!(windows))
+}
+
+fn nginx_path_text(path: &str, windows: bool) -> Result<String> {
     if path.chars().any(|character| {
         character == '"'
             || character == '$'
             || character.is_control()
-            || (cfg!(unix) && character == '\\')
+            || (!windows && character == '\\')
     }) {
         return Err(OrchestError::InvalidInput(format!(
             "project path cannot be represented in nginx configuration: {path}"
         )));
     }
+    let path = if windows {
+        if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{unc}")
+        } else if let Some(drive) = path.strip_prefix(r"\\?\") {
+            let bytes = drive.as_bytes();
+            if bytes.len() < 3
+                || !bytes[0].is_ascii_alphabetic()
+                || bytes[1] != b':'
+                || bytes[2] != b'\\'
+            {
+                return Err(OrchestError::InvalidInput(format!(
+                    "unsupported Windows project path: {path}"
+                )));
+            }
+            drive.to_owned()
+        } else {
+            path.to_owned()
+        }
+    } else {
+        path.to_owned()
+    };
     Ok(path.replace('\\', "/"))
 }
 
@@ -1705,6 +1730,8 @@ mod tests {
         assert!(config
             .contains("location ~* \\.(?:phtml|phar|php[0-9]?|inc)(?:$|[./]) { return 404; }"));
         assert!(config.contains("listen 127.0.0.1:80 default_server"));
+        #[cfg(windows)]
+        assert!(!config.contains("//?/"));
         for (directive, directory) in [
             ("client_body_temp_path", "client_body_temp"),
             ("proxy_temp_path", "proxy_temp"),
@@ -1714,6 +1741,18 @@ mod tests {
         ] {
             assert!(config.contains(&format!("{directive} temp/{directory};")));
         }
+    }
+    #[test]
+    fn nginx_path_converts_windows_verbatim_drive_for_php_cgi() {
+        assert_eq!(
+            nginx_path_text(r"\\?\C:\Users\test\AppData\Local\Orchest\www\demo", true).unwrap(),
+            "C:/Users/test/AppData/Local/Orchest/www/demo"
+        );
+        assert_eq!(
+            nginx_path_text(r"\\?\UNC\server\share\demo", true).unwrap(),
+            "//server/share/demo"
+        );
+        assert!(nginx_path_text(r"\\?\Volume{123}\demo", true).is_err());
     }
     #[test]
     fn nginx_prefix_has_all_configured_temp_directories() {

@@ -399,6 +399,12 @@ mod windows_tests {
             )
             .unwrap();
         assert!(state.pid > 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while supervisor.status("fixture").unwrap() != ServiceStatus::Running
+            && Instant::now() < deadline
+        {
+            thread::sleep(Duration::from_millis(100));
+        }
         assert_eq!(
             supervisor.status("fixture").unwrap(),
             ServiceStatus::Running

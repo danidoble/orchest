@@ -1092,7 +1092,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "orchest-api"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "axum",
  "orchest-core",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "orchest-cli"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "clap",
  "orchest-core",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "orchest-core"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "chrono",
  "orchest-packages",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "orchest-packages"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "flate2",
  "orchest-platform",
@@ -1151,7 +1151,7 @@ dependencies = [
 
 [[package]]
 name = "orchest-platform"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "tempfile",
  "thiserror",
@@ -1159,7 +1159,7 @@ dependencies = [
 
 [[package]]
 name = "orchest-process"
-version = "0.1.0-alpha.6"
+version = "0.1.0-alpha.7"
 dependencies = [
  "chrono",
  "orchest-platform",

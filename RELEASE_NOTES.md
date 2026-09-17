@@ -1,3 +1,3 @@
-# Orchest v0.1.0-alpha.6
+# Orchest v0.1.0-alpha.7
 
-Fixes PHP requests on Windows by converting canonical project paths to Nginx and PHP compatible drive paths.
+Adds per-site Apache proxy behind Nginx, local HTTPS with automatic certificate renewal, PHP reload, and framework extensions for PHP 8.2-8.5. Nginx with FastCGI remains the default for all sites.
